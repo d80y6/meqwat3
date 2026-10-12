@@ -14,20 +14,9 @@ export interface Ctx {
   role: string;
 }
 
-type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
-
-/**
- * Run work inside a transaction with PostgreSQL RLS session variables set.
- * Policies (db/rls.sql) key off app.tenant_id / app.is_admin; the service
- * layer additionally scopes every query by tenant_id (defense in depth).
- */
-export async function withTenantTx<T>(ctx: { tenantId: string | null }, fn: (tx: Tx) => Promise<T>): Promise<T> {
-  return db.transaction(async (tx) => {
-    await tx.execute(sql`select set_config('app.tenant_id', ${ctx.tenantId ?? ""}, true)`);
-    await tx.execute(sql`select set_config('app.is_admin', ${ctx.tenantId ? "false" : "true"}, true)`);
-    return fn(tx);
-  });
-}
+import { withTenantTx, type Tx } from "./tx";
+export { withTenantTx } from "./tx";
+export type { Tx } from "./tx";
 
 async function replayIfProcessed(tx: Tx, tenantId: string, mutationId?: string | null) {
   if (!mutationId) return null;

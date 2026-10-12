@@ -43,10 +43,25 @@ input[type="number"], .ltr-nums {
 .slim-scroll::-webkit-scrollbar-thumb { background: #cbd5cb; border-radius: 999px; }
 .slim-scroll::-webkit-scrollbar-track { background: transparent; }
 
-/* Print: clean invoice/receipt printing */
+/* Print: 80mm thermal receipt. When a receipt is mounted (#receipt-print),
+   ONLY it is visible; everything else in the app is hidden. */
 @media print {
   .no-print { display: none !important; }
   body { background: #fff; }
+  body:has(#receipt-print) * { visibility: hidden; }
+  body:has(#receipt-print) #receipt-print,
+  body:has(#receipt-print) #receipt-print * { visibility: visible; }
+  #receipt-print {
+    position: absolute;
+    top: 0;
+    inset-inline-start: 0;
+    width: 80mm;
+    padding: 4mm;
+    color: #000;
+    font-size: 12px;
+    line-height: 1.7;
+  }
+  @page { margin: 4mm; }
 }
 
 @keyframes slide-up {

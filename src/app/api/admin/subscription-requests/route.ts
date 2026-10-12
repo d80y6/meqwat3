@@ -44,8 +44,24 @@ export const POST = handler(async (req: Request) => {
   if (action === "approve") {
     const result = await approveRequest(requestId, user.id);
     await audit(user, "admin.request.approve", "subscription_request", requestId, { tenantId: result.tenant.id });
-    // tempPassword is returned once so the admin can hand credentials to the owner.
-    return ok(result);
+    // Deliver credentials/notice by email when SMTP is configured; the
+    // tempPassword is also returned once so the admin can hand it over.
+    const { sendOwnerCredentials, sendPlanChangeApproved } = await import("@/lib/mail");
+    const mail = result.tempPassword
+      ? await sendOwnerCredentials({
+          to: result.ownerEmail,
+          ownerName: request.ownerName,
+          tenantName: result.tenant.name,
+          tempPassword: result.tempPassword,
+          planName: result.planName,
+        })
+      : await sendPlanChangeApproved({
+          to: result.ownerEmail,
+          tenantName: result.tenant.name,
+          planName: result.planName,
+          endsAt: new Date(Date.now() + 30 * 86400_000),
+        });
+    return ok({ ...result, emailSent: mail.sent, emailReason: mail.reason ?? null });
   }
   throw new ApiError("إجراء غير صالح");
 });

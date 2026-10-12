@@ -46,5 +46,13 @@ export const POST = handler(async (req: Request) => {
     isDemo: Boolean(body?.isDemo),
   });
   await audit(user, "admin.tenant.create", "tenant", result.tenant.id, { name: body?.name });
-  return ok(result, 201);
+  const { sendOwnerCredentials } = await import("@/lib/mail");
+  const mail = await sendOwnerCredentials({
+    to: result.owner.email,
+    ownerName: String(body?.ownerName ?? ""),
+    tenantName: result.tenant.name,
+    tempPassword: result.tempPassword,
+    planName: result.plan.name,
+  });
+  return ok({ ...result, emailSent: mail.sent }, 201);
 });

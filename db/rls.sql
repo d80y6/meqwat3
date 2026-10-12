@@ -22,7 +22,8 @@ DECLARE
   tenant_tables text[] := ARRAY[
     'subscriptions','users','products','customers','suppliers','cash_registers',
     'shifts','purchases','purchase_items','sales','sale_items','payments',
-    'inventory_movements','financial_transactions','processed_mutations'
+    'inventory_movements','financial_transactions','processed_mutations',
+    'tenant_counters'
   ];
 BEGIN
   FOREACH t IN ARRAY tenant_tables LOOP

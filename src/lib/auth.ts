@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import { createHash, randomBytes } from "crypto";
 import { cookies, headers } from "next/headers";
 import { db } from "@/db";
+import { withTenantTx } from "./tx";
 import { sessions, users, tenants } from "@/db/schema";
 import { and, eq, gt, isNull } from "drizzle-orm";
 import type { Role } from "./permissions";
@@ -108,12 +109,18 @@ export async function rotateRefreshSession(): Promise<AuthUser | null> {
     .where(and(eq(sessions.refreshTokenHash, hash), isNull(sessions.revokedAt), gt(sessions.expiresAt, new Date())))
     .limit(1);
   if (!session) return null;
-  const [user] = await db.select().from(users).where(eq(users.id, session.userId)).limit(1);
-  if (!user || !user.isActive) return null;
-  if (user.tenantId) {
-    const [tenant] = await db.select().from(tenants).where(eq(tenants.id, user.tenantId)).limit(1);
-    if (!tenant || tenant.status !== "active") return null;
-  }
+  // Admin-context transaction: no tenant is known yet at refresh time, and
+  // users/tenants reads must work under the RLS-restricted app role too.
+  const user = await withTenantTx({ tenantId: null }, async (tx) => {
+    const [u] = await tx.select().from(users).where(eq(users.id, session.userId)).limit(1);
+    if (!u || !u.isActive) return null;
+    if (u.tenantId) {
+      const [tenant] = await tx.select().from(tenants).where(eq(tenants.id, u.tenantId)).limit(1);
+      if (!tenant || tenant.status !== "active") return null;
+    }
+    return u;
+  });
+  if (!user) return null;
   // Revoke old session (rotation) and issue a new one.
   await db.update(sessions).set({ revokedAt: new Date() }).where(eq(sessions.id, session.id));
   const authUser: AuthUser = {

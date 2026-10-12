@@ -1,7 +1,7 @@
 import { randomBytes } from "crypto";
 import { db } from "@/db";
 import { tenants, subscriptions, plans, users, cashRegisters, subscriptionRequests } from "@/db/schema";
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
 import { hashPassword } from "./auth";
 import { ApiError } from "./api";
 import { withTenantTx } from "./services";
@@ -35,7 +35,10 @@ export async function provisionTenant(input: ProvisionInput) {
   if (!input.businessName.trim() || !input.ownerName.trim() || !input.email.trim()) {
     throw new ApiError("بيانات المتجر والمالك والبريد مطلوبة");
   }
-  const [existing] = await db.select({ id: users.id }).from(users).where(eq(users.email, input.email)).limit(1);
+  const existing = await withTenantTx({ tenantId: null }, async (tx) => {
+    const [row] = await tx.select({ id: users.id }).from(users).where(eq(users.email, input.email)).limit(1);
+    return row ?? null;
+  });
   if (existing) throw new ApiError("البريد الإلكتروني مستخدم لحساب آخر");
 
   let plan = null as typeof plans.$inferSelect | null;
@@ -55,6 +58,9 @@ export async function provisionTenant(input: ProvisionInput) {
   const endsAt = new Date(Date.now() + trialDays * 86400_000);
 
   const tenant = await db.transaction(async (tx) => {
+    // Platform context: provisioning writes across tenant boundary (RLS).
+    await tx.execute(sql`select set_config('app.is_admin', 'true', true)`);
+    await tx.execute(sql`select set_config('app.tenant_id', '', true)`);
     const [t] = await tx
       .insert(tenants)
       .values({
@@ -115,15 +121,19 @@ export async function approveRequest(requestId: string, reviewerId: string): Pro
   if (request.status !== "pending") throw new ApiError("تمت مراجعة هذا الطلب مسبقاً");
 
   if (request.tenantId) {
-    const [tenant] = await db.select().from(tenants).where(eq(tenants.id, request.tenantId)).limit(1);
-    if (!tenant) throw new ApiError("المتجر المرتبط بالطلب غير موجود", 404);
-    const [latest] = await db
-      .select()
-      .from(subscriptions)
-      .where(eq(subscriptions.tenantId, tenant.id))
-      .orderBy(desc(subscriptions.createdAt))
-      .limit(1);
-    if (!latest) throw new ApiError("لا يوجد اشتراك حالي لهذا المتجر");
+    const linkedTenantId = request.tenantId;
+    const { tenant, latest } = await withTenantTx({ tenantId: null }, async (tx) => {
+      const [t] = await tx.select().from(tenants).where(eq(tenants.id, linkedTenantId)).limit(1);
+      if (!t) throw new ApiError("المتجر المرتبط بالطلب غير موجود", 404);
+      const [sub] = await tx
+        .select()
+        .from(subscriptions)
+        .where(eq(subscriptions.tenantId, t.id))
+        .orderBy(desc(subscriptions.createdAt))
+        .limit(1);
+      if (!sub) throw new ApiError("لا يوجد اشتراك حالي لهذا المتجر");
+      return { tenant: t, latest: sub };
+    });
     let planName = "";
     if (request.planId) {
       const [plan] = await db.select().from(plans).where(eq(plans.id, request.planId)).limit(1);
@@ -132,6 +142,8 @@ export async function approveRequest(requestId: string, reviewerId: string): Pro
     }
     const base = latest.endsAt && latest.endsAt > new Date() ? latest.endsAt : new Date();
     await db.transaction(async (tx) => {
+      await tx.execute(sql`select set_config('app.is_admin', 'true', true)`);
+      await tx.execute(sql`select set_config('app.tenant_id', '', true)`);
       await tx
         .update(subscriptions)
         .set({

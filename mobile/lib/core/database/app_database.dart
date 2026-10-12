@@ -74,13 +74,17 @@ class AppDatabase {
   Future<void> deleteOutbox(String mutationId) =>
       _db.delete('outbox', where: 'client_mutation_id = ?', whereArgs: [mutationId]);
 
-  Future<void> markOutbox(String mutationId, String status, String? error) => _db.update(
-        'outbox',
-        {'status': status, 'error': error, 'attempts': Sqflite.firstIntValue(await _db.rawQuery(
-              'SELECT attempts FROM outbox WHERE client_mutation_id = ?', [mutationId]))! + 1},
-        where: 'client_mutation_id = ?',
-        whereArgs: [mutationId],
-      );
+  Future<void> markOutbox(String mutationId, String status, String? error) async {
+    final rows = await _db.rawQuery(
+        'SELECT attempts FROM outbox WHERE client_mutation_id = ?', [mutationId]);
+    final attempts = (Sqflite.firstIntValue(rows) ?? 0) + 1;
+    await _db.update(
+      'outbox',
+      {'status': status, 'error': error, 'attempts': attempts},
+      where: 'client_mutation_id = ?',
+      whereArgs: [mutationId],
+    );
+  }
 
   Future<void> recordConfirmed(Map<String, Object?> row) =>
       _db.insert('confirmed_sales', row, conflictAlgorithm: ConflictAlgorithm.ignore);

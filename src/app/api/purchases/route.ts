@@ -1,8 +1,7 @@
-import { db } from "@/db";
 import { purchases, purchaseItems, products, suppliers } from "@/db/schema";
 import { and, eq, desc, count } from "drizzle-orm";
 import { ok, handler, requireTenantUser, parsePagination, audit, ApiError } from "@/lib/api";
-import { assertTenantWritable, createPurchase } from "@/lib/services";
+import { assertTenantWritable, createPurchase, withTenantTx } from "@/lib/services";
 
 export const dynamic = "force-dynamic";
 
@@ -14,26 +13,30 @@ export const GET = handler(async (req: Request) => {
   const supplierId = url.searchParams.get("supplierId");
   if (supplierId) conds.push(eq(purchases.supplierId, supplierId));
   const where = and(...conds);
-  const [rows, total] = await Promise.all([
-    db
+
+  const { rows, total, items } = await withTenantTx(user, async (tx) => {
+    const rows = await tx
       .select({ purchase: purchases, supplierName: suppliers.name })
       .from(purchases)
       .innerJoin(suppliers, eq(purchases.supplierId, suppliers.id))
       .where(where)
       .orderBy(desc(purchases.purchaseDate))
       .limit(limit)
-      .offset(offset),
-    db.select({ c: count() }).from(purchases).where(where),
-  ]);
-  const ids = rows.map((r) => r.purchase.id);
-  const items = ids.length
-    ? await db
-        .select({ item: purchaseItems, productName: products.name, unit: products.unit })
-        .from(purchaseItems)
-        .innerJoin(products, eq(purchaseItems.productId, products.id))
-        .where(eq(purchaseItems.tenantId, user.tenantId))
-    : [];
+      .offset(offset);
+    const total = await tx.select({ c: count() }).from(purchases).where(where);
+    const ids = rows.map((r) => r.purchase.id);
+    const items = ids.length
+      ? await tx
+          .select({ item: purchaseItems, productName: products.name, unit: products.unit })
+          .from(purchaseItems)
+          .innerJoin(products, eq(purchaseItems.productId, products.id))
+          .where(eq(purchaseItems.tenantId, user.tenantId))
+      : [];
+    return { rows, total, items, ids };
+  });
+
   const byPurchase = new Map<string, unknown[]>();
+  const ids = rows.map((r) => r.purchase.id);
   for (const row of items) {
     if (!ids.includes(row.item.purchaseId)) continue;
     const arr = byPurchase.get(row.item.purchaseId) ?? [];

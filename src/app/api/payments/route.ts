@@ -1,8 +1,7 @@
-import { db } from "@/db";
 import { payments, customers, suppliers } from "@/db/schema";
 import { and, eq, desc, count } from "drizzle-orm";
 import { ok, handler, requireTenantUser, parsePagination, audit, ApiError } from "@/lib/api";
-import { assertTenantWritable, recordPayment } from "@/lib/services";
+import { assertTenantWritable, recordPayment, withTenantTx } from "@/lib/services";
 
 export const dynamic = "force-dynamic";
 
@@ -14,8 +13,8 @@ export const GET = handler(async (req: Request) => {
   const kind = url.searchParams.get("kind");
   if (kind) conds.push(eq(payments.kind, kind));
   const where = and(...conds);
-  const [rows, total] = await Promise.all([
-    db
+  const { rows, total } = await withTenantTx(user, async (tx) => {
+    const rows = await tx
       .select({ payment: payments, customerName: customers.name, supplierName: suppliers.name })
       .from(payments)
       .leftJoin(customers, eq(payments.customerId, customers.id))
@@ -23,9 +22,10 @@ export const GET = handler(async (req: Request) => {
       .where(where)
       .orderBy(desc(payments.createdAt))
       .limit(limit)
-      .offset(offset),
-    db.select({ c: count() }).from(payments).where(where),
-  ]);
+      .offset(offset);
+    const total = await tx.select({ c: count() }).from(payments).where(where);
+    return { rows, total };
+  });
   return ok({
     items: rows.map((r) => ({ ...r.payment, partyName: r.customerName ?? r.supplierName ?? null })),
     total: total[0]?.c ?? 0,

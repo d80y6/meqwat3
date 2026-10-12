@@ -22,7 +22,7 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(true);
   const [createModal, setCreateModal] = useState(false);
   const [form, setForm] = useState({ name: "", ownerName: "", email: "", phone: "", city: "", planId: "", isDemo: false });
-  const [credentials, setCredentials] = useState<{ email: string; tempPassword: string; tenantName: string; emailSent?: boolean } | null>(null);
+  const [credentials, setCredentials] = useState<{ email: string; tempPassword: string; tenantName: string; emailSent: boolean } | null>(null);
   const [manageFor, setManageFor] = useState<TenantRow | null>(null);
   const [managePlan, setManagePlan] = useState("");
   const [extendDays, setExtendDays] = useState("30");
@@ -50,7 +50,7 @@ export default function AdminPage() {
   async function createTenant(e: React.FormEvent) {
     e.preventDefault();
     try {
-      const res = await apiPost<{ tenant: { name: string }; owner: { email: string }; tempPassword: string; emailSent?: boolean }>("/api/admin/tenants", form);
+      const res = await apiPost<{ tenant: { name: string }; owner: { email: string }; tempPassword: string; emailSent: boolean }>("/api/admin/tenants", form);
       setCredentials({ email: res.owner.email, tempPassword: res.tempPassword, tenantName: res.tenant.name, emailSent: res.emailSent });
       setCreateModal(false);
       void load();
@@ -82,12 +82,12 @@ export default function AdminPage() {
   async function review(req: RequestRow, action: "approve" | "reject") {
     try {
       if (action === "approve") {
-        const res = await apiPost<{ tenant: { name: string }; ownerEmail: string; tempPassword: string | null; upgraded: boolean; planName: string }>("/api/admin/subscription-requests", { requestId: req.id, action });
+        const res = await apiPost<{ tenant: { name: string }; ownerEmail: string; tempPassword: string | null; upgraded: boolean; planName: string; emailSent: boolean }>("/api/admin/subscription-requests", { requestId: req.id, action });
         if (res.upgraded) {
           toast.push("success", `تمت الموافقة — طُبّقت باقة «${res.planName}» على متجر ${res.tenant.name} ومُدّدت ٣٠ يوماً`);
         } else if (res.tempPassword) {
-          setCredentials({ email: res.ownerEmail, tempPassword: res.tempPassword, tenantName: res.tenant.name, emailSent: (res as { emailSent?: boolean }).emailSent });
-          toast.push("success", "تمت الموافقة وإنشاء المتجر");
+          setCredentials({ email: res.ownerEmail, tempPassword: res.tempPassword, tenantName: res.tenant.name, emailSent: res.emailSent });
+          toast.push("success", res.emailSent ? "تمت الموافقة وإنشاء المتجر وأُرسلت بيانات الدخول بالبريد" : "تمت الموافقة وإنشاء المتجر");
         }
       } else {
         await apiPost("/api/admin/subscription-requests", { requestId: req.id, action });
@@ -232,9 +232,11 @@ export default function AdminPage() {
         {credentials && (
           <div className="space-y-3">
             <p className="flex items-center gap-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800"><KeyRound className="h-4 w-4" /> تُعرض كلمة المرور المؤقتة مرة واحدة فقط — سلّمها للمالك واطلب تغييرها.</p>
-            {credentials.emailSent
-              ? <p className="rounded-lg bg-leaf-50 px-3 py-2 text-sm text-leaf-800">أُرسلت البيانات أيضاً إلى بريد المالك تلقائياً.</p>
-              : <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-500">لم يُرسَل بريد تلقائي (SMTP غير مهيأ) — سلّم البيانات يدوياً.</p>}
+            <p className={`rounded-lg px-3 py-2 text-sm ${credentials.emailSent ? "bg-leaf-50 text-leaf-800" : "bg-slate-50 text-slate-600"}`}>
+              {credentials.emailSent
+                ? "✓ أُرسلت بيانات الدخول إلى بريد المالك عبر SMTP."
+                : "لم يُرسَل بريد تلقائياً (SMTP غير مهيّأ في هذه البيئة) — سلّم البيانات للمالك يدوياً."}
+            </p>
             <div className="rounded-xl bg-slate-50 p-4 text-sm leading-8">
               <p>المتجر: <b>{credentials.tenantName}</b></p>
               <p>البريد: <b dir="ltr">{credentials.email}</b></p>

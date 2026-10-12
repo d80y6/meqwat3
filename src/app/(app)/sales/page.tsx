@@ -5,6 +5,7 @@ import { ChevronDown, ChevronLeft, RotateCcw, Printer } from "lucide-react";
 import { apiGet, apiPost } from "@/lib/client";
 import { fmtMoney, fmtQty } from "@/lib/money";
 import { Btn, Field, Input, Select, Modal, PageHeader, TableShell, Badge, EmptyState, Loading, useToast } from "@/components/ui";
+import Receipt from "@/components/Receipt";
 
 interface SaleItemRow { id: string; productName: string; unit: string; qty: string; returnedQty: string; unitPrice: string; total: string }
 interface Sale {
@@ -26,28 +27,13 @@ export default function SalesPage() {
   const [items, setItems] = useState<Sale[]>([]);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [shopName, setShopName] = useState("متجر مقوات");
-  const [receipt, setReceipt] = useState<Sale | null>(null);
-
-  useEffect(() => {
-    apiGet<{ tenant: { name: string } | null }>("/api/auth/me")
-      .then((d) => { if (d.tenant?.name) setShopName(d.tenant.name); })
-      .catch(() => {});
-  }, []);
-
-  // Print the receipt once it has rendered, then unmount it.
-  useEffect(() => {
-    if (!receipt) return;
-    const clear = () => setReceipt(null);
-    window.addEventListener("afterprint", clear);
-    const t = setTimeout(() => window.print(), 80);
-    return () => { clearTimeout(t); window.removeEventListener("afterprint", clear); };
-  }, [receipt]);
   const [returnFor, setReturnFor] = useState<Sale | null>(null);
   const [returnQtys, setReturnQtys] = useState<Record<string, string>>({});
   const [restock, setRestock] = useState<Record<string, boolean>>({});
   const [refundMethod, setRefundMethod] = useState<"cash" | "debt">("cash");
   const [savingReturn, setSavingReturn] = useState(false);
+  const [receiptFor, setReceiptFor] = useState<Sale | null>(null);
+  const [tenantName, setTenantName] = useState("متجرنا");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -58,6 +44,9 @@ export default function SalesPage() {
     finally { setLoading(false); }
   }, [toast]);
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    apiGet<{ tenant: { name: string } | null }>("/api/auth/me").then((d) => { if (d.tenant?.name) setTenantName(d.tenant.name); }).catch(() => {});
+  }, []);
 
   function openReturn(sale: Sale) {
     setReturnFor(sale);
@@ -127,8 +116,8 @@ export default function SalesPage() {
                       ))}
                     </ul>
                     {Number(s.returnedAmount) > 0 && <p className="mt-2 text-xs text-red-600">إجمالي المرتجعات: {fmtMoney(s.returnedAmount)}</p>}
-                    <button onClick={() => setReceipt(s)} className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-slate-500 hover:text-slate-700 no-print">
-                      <Printer className="h-3.5 w-3.5" /> طباعة الإيصال
+                    <button onClick={() => setReceiptFor(s)} className="mt-2 inline-flex items-center gap-1 rounded-lg bg-white px-2.5 py-1.5 text-xs font-bold text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50 no-print">
+                      <Printer className="h-3.5 w-3.5" /> طباعة إيصال حراري
                     </button>
                   </td>
                 </tr>
@@ -176,38 +165,33 @@ export default function SalesPage() {
         )}
       </Modal>
 
-      {/* 80mm thermal receipt — only this prints (see globals.css @media print) */}
-      {receipt && (
-        <div id="receipt-print" dir="rtl" aria-hidden="true">
-          <div style={{ textAlign: "center", borderBottom: "1px dashed #000", paddingBottom: 6 }}>
-            <div style={{ fontSize: 16, fontWeight: 800 }}>{shopName}</div>
-            <div>فاتورة بيع #{receipt.invoiceNo}</div>
-            <div>{new Date(receipt.saleDate).toLocaleString("ar-YE")}</div>
-            <div>{receipt.customerName ? `العميل: ${receipt.customerName}` : "عميل نقدي"}</div>
+      <Modal open={!!receiptFor} onClose={() => setReceiptFor(null)} title={`إيصال فاتورة #${receiptFor?.invoiceNo ?? ""}`}>
+        {receiptFor && (
+          <div className="space-y-4">
+            <div className="overflow-x-auto rounded-xl bg-slate-100 p-3">
+              <Receipt
+                tenantName={tenantName}
+                sale={{
+                  invoiceNo: receiptFor.invoiceNo,
+                  saleDate: receiptFor.saleDate,
+                  customerName: receiptFor.customerName,
+                  items: receiptFor.items,
+                  totalAmount: receiptFor.totalAmount,
+                  discount: receiptFor.discount,
+                  paidAmount: receiptFor.paidAmount,
+                  creditAmount: receiptFor.creditAmount,
+                  returnedAmount: receiptFor.returnedAmount,
+                  status: receiptFor.status,
+                }}
+              />
+            </div>
+            <Btn onClick={() => window.print()} className="w-full no-print">
+              <Printer className="h-4 w-4" /> طباعة الإيصال (80مم)
+            </Btn>
+            <p className="text-center text-xs text-slate-400 no-print">سيُطبع الإيصال فقط بصيغة الطابعات الحرارية.</p>
           </div>
-          <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 6 }}>
-            <tbody>
-              {receipt.items.map((it) => (
-                <tr key={it.id}>
-                  <td>{it.productName}<br /><span>{fmtQty(it.qty)} {it.unit} × {fmtMoney(it.unitPrice)}{Number(it.returnedQty) > 0 ? ` (مُرجع ${fmtQty(it.returnedQty)})` : ""}</span></td>
-                  <td style={{ textAlign: "left", verticalAlign: "top" }}>{fmtMoney(it.total)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <div style={{ borderTop: "1px dashed #000", marginTop: 6, paddingTop: 6 }}>
-            <div style={{ display: "flex", justifyContent: "space-between" }}><span>الإجمالي</span><span>{fmtMoney(receipt.totalAmount)}</span></div>
-            {Number(receipt.discount) > 0 && <div style={{ display: "flex", justifyContent: "space-between" }}><span>الخصم</span><span>-{fmtMoney(receipt.discount)}</span></div>}
-            <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 800, fontSize: 14 }}><span>الصافي</span><span>{fmtMoney(Number(receipt.totalAmount) - Number(receipt.discount))}</span></div>
-            <div style={{ display: "flex", justifyContent: "space-between" }}><span>المدفوع ({METHOD[receipt.paymentMethod] ?? receipt.paymentMethod})</span><span>{fmtMoney(receipt.paidAmount)}</span></div>
-            {Number(receipt.creditAmount) > 0 && <div style={{ display: "flex", justifyContent: "space-between" }}><span>آجل على الحساب</span><span>{fmtMoney(receipt.creditAmount)}</span></div>}
-            {Number(receipt.returnedAmount) > 0 && <div style={{ display: "flex", justifyContent: "space-between" }}><span>مرتجعات</span><span>-{fmtMoney(receipt.returnedAmount)}</span></div>}
-          </div>
-          <div style={{ textAlign: "center", borderTop: "1px dashed #000", marginTop: 6, paddingTop: 6 }}>
-            شكراً لتعاملكم معنا — {shopName}
-          </div>
-        </div>
-      )}
+        )}
+      </Modal>
     </div>
   );
 }

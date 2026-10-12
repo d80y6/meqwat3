@@ -20,31 +20,17 @@ function accessExpired(req: NextRequest): boolean {
   }
 }
 
-const SECURITY_HEADERS: Record<string, string> = {
-  "X-Content-Type-Options": "nosniff",
-  "X-Frame-Options": "DENY",
-  "Referrer-Policy": "strict-origin-when-cross-origin",
-  "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
-  "Content-Security-Policy":
-    "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
-};
-
-function withSecurityHeaders(res: NextResponse): NextResponse {
-  for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.headers.set(k, v);
-  return res;
-}
-
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
   const isProtected = PROTECTED.some((p) => pathname === p || pathname.startsWith(`${p}/`));
-  if (!isProtected) return withSecurityHeaders(NextResponse.next());
+  if (!isProtected) return NextResponse.next();
 
   const hasRefresh = req.cookies.has("meqwat_rt");
   if (!hasRefresh && !req.cookies.has("meqwat_at")) {
     const url = req.nextUrl.clone();
     url.pathname = "/login";
     url.searchParams.set("next", pathname);
-    return withSecurityHeaders(NextResponse.redirect(url));
+    return NextResponse.redirect(url);
   }
 
   if (hasRefresh && accessExpired(req)) {
@@ -58,13 +44,13 @@ export async function middleware(req: NextRequest) {
         const setCookies = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [];
         const response = NextResponse.next();
         for (const c of setCookies) response.headers.append("set-cookie", c);
-        return withSecurityHeaders(response);
+        return response;
       }
     } catch {
       // fall through — layout will redirect to /login
     }
   }
-  return withSecurityHeaders(NextResponse.next());
+  return NextResponse.next();
 }
 
 export const config = {

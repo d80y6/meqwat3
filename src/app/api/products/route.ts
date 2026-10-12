@@ -1,4 +1,3 @@
-import { db } from "@/db";
 import { products, inventoryMovements } from "@/db/schema";
 import { and, eq, ilike, desc, count } from "drizzle-orm";
 import { ok, handler, requireTenantUser, parsePagination, audit, ApiError } from "@/lib/api";
@@ -15,10 +14,12 @@ export const GET = handler(async (req: Request) => {
   const conds = [eq(products.tenantId, user.tenantId)];
   if (search) conds.push(ilike(products.name, `%${search}%`));
   if (activeOnly) conds.push(eq(products.isActive, true));
-  const [rows, total] = await Promise.all([
-    db.select().from(products).where(and(...conds)).orderBy(desc(products.createdAt)).limit(limit).offset(offset),
-    db.select({ c: count() }).from(products).where(and(...conds)),
-  ]);
+  const where = and(...conds);
+  const { rows, total } = await withTenantTx(user, async (tx) => {
+    const rows = await tx.select().from(products).where(where).orderBy(desc(products.createdAt)).limit(limit).offset(offset);
+    const total = await tx.select({ c: count() }).from(products).where(where);
+    return { rows, total };
+  });
   return ok({ items: rows, total: total[0]?.c ?? 0 });
 });
 

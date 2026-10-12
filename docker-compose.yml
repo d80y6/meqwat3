@@ -8,6 +8,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-meqwat}
     volumes:
       - meqwat_pgdata:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-meqwat}"]
       interval: 5s
@@ -23,7 +24,10 @@ services:
       db:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-meqwat}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-meqwat}
+      # Runtime connects as the restricted meqwat_app role (created by
+      # db/init/01-app-role.sql) so RLS policies bind. Migrations/bootstrap
+      # run separately with the owner role — see README.
+      DATABASE_URL: postgresql://meqwat_app:${APP_DB_PASSWORD:?set APP_DB_PASSWORD}@db:5432/${POSTGRES_DB:-meqwat}
       AUTH_SECRET: ${AUTH_SECRET:?set AUTH_SECRET to a long random value}
       NODE_ENV: production
       PORT: "3000"

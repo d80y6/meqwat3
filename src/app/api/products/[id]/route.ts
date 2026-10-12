@@ -1,12 +1,12 @@
-import { db } from "@/db";
 import { products } from "@/db/schema";
 import { and, eq } from "drizzle-orm";
 import { ok, handler, requireTenantUser, audit, ApiError } from "@/lib/api";
+import { withTenantTx, type Tx } from "@/lib/services";
 
 export const dynamic = "force-dynamic";
 
-async function loadTenantProduct(tenantId: string, id: string) {
-  const [p] = await db
+async function loadTenantProduct(tx: Tx, tenantId: string, id: string) {
+  const [p] = await tx
     .select()
     .from(products)
     .where(and(eq(products.id, id), eq(products.tenantId, tenantId)))
@@ -18,7 +18,6 @@ async function loadTenantProduct(tenantId: string, id: string) {
 export const PATCH = handler(async (req: Request, { params }: { params: Promise<{ id: string }> }) => {
   const user = await requireTenantUser("products:manage");
   const { id } = await params;
-  await loadTenantProduct(user.tenantId, id);
   const body = await req.json();
   const patch: Record<string, unknown> = { updatedAt: new Date() };
   for (const key of ["name", "sku", "category", "unit"] as const) {
@@ -29,11 +28,15 @@ export const PATCH = handler(async (req: Request, { params }: { params: Promise<
   }
   if (body.isActive !== undefined) patch.isActive = Boolean(body.isActive);
   if (body.trackStock !== undefined) patch.trackStock = Boolean(body.trackStock);
-  const [updated] = await db
-    .update(products)
-    .set(patch)
-    .where(and(eq(products.id, id), eq(products.tenantId, user.tenantId)))
-    .returning();
+  const updated = await withTenantTx(user, async (tx) => {
+    await loadTenantProduct(tx, user.tenantId, id);
+    const [row] = await tx
+      .update(products)
+      .set(patch)
+      .where(and(eq(products.id, id), eq(products.tenantId, user.tenantId)))
+      .returning();
+    return row;
+  });
   await audit(user, "product.update", "product", id);
   return ok(updated);
 });
@@ -41,13 +44,16 @@ export const PATCH = handler(async (req: Request, { params }: { params: Promise<
 export const DELETE = handler(async (_req: Request, { params }: { params: Promise<{ id: string }> }) => {
   const user = await requireTenantUser("products:manage");
   const { id } = await params;
-  await loadTenantProduct(user.tenantId, id);
-  // Soft-delete: products referenced by sales history must never disappear.
-  const [updated] = await db
-    .update(products)
-    .set({ isActive: false, updatedAt: new Date() })
-    .where(and(eq(products.id, id), eq(products.tenantId, user.tenantId)))
-    .returning();
+  const updated = await withTenantTx(user, async (tx) => {
+    await loadTenantProduct(tx, user.tenantId, id);
+    // Soft-delete: products referenced by sales history must never disappear.
+    const [row] = await tx
+      .update(products)
+      .set({ isActive: false, updatedAt: new Date() })
+      .where(and(eq(products.id, id), eq(products.tenantId, user.tenantId)))
+      .returning();
+    return row;
+  });
   await audit(user, "product.deactivate", "product", id);
   return ok(updated);
 });

@@ -3,6 +3,7 @@ import { db } from "./index";
 import { plans, users } from "./schema";
 import { eq } from "drizzle-orm";
 import { hashPassword } from "../lib/auth";
+import { withTenantTx } from "../lib/services";
 
 /**
  * Production bootstrap — run ONCE on a fresh production database:
@@ -27,22 +28,23 @@ async function main() {
 
   const adminEmail = (process.env.ADMIN_EMAIL ?? "admin@meqwat.app").toLowerCase();
   const adminPassword = process.env.ADMIN_PASSWORD;
-  const [existingAdmin] = await db.select().from(users).where(eq(users.email, adminEmail)).limit(1);
-  if (!existingAdmin) {
+  // users table is RLS-protected: identity writes run in platform context.
+  const createdAdmin = await withTenantTx({ tenantId: null }, async (tx) => {
+    const [existingAdmin] = await tx.select().from(users).where(eq(users.email, adminEmail)).limit(1);
+    if (existingAdmin) return false;
     if (!adminPassword || adminPassword.length < 10) {
       throw new Error("Set ADMIN_PASSWORD (10+ chars) in the environment before first bootstrap.");
     }
-    await db.insert(users).values({
+    await tx.insert(users).values({
       tenantId: null,
       name: process.env.ADMIN_NAME ?? "مدير المنصة",
       email: adminEmail,
       passwordHash: await hashPassword(adminPassword),
       role: "platform_admin",
     });
-    console.log(`✓ Platform admin created: ${adminEmail}`);
-  } else {
-    console.log("• Platform admin already exists — skipped.");
-  }
+    return true;
+  });
+  console.log(createdAdmin ? `✓ Platform admin created: ${adminEmail}` : "• Platform admin already exists — skipped.");
   console.log("Bootstrap complete. No demo data was created.");
 }
 

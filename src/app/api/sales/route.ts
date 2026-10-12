@@ -1,8 +1,7 @@
-import { db } from "@/db";
 import { sales, saleItems, products, customers } from "@/db/schema";
 import { and, eq, desc, count, gte, lte } from "drizzle-orm";
 import { ok, handler, requireTenantUser, parsePagination, audit, ApiError } from "@/lib/api";
-import { assertTenantWritable, createSale } from "@/lib/services";
+import { assertTenantWritable, createSale, withTenantTx } from "@/lib/services";
 
 export const dynamic = "force-dynamic";
 
@@ -18,28 +17,27 @@ export const GET = handler(async (req: Request) => {
   if (from) conds.push(gte(sales.saleDate, new Date(from)));
   if (to) conds.push(lte(sales.saleDate, new Date(to)));
   const where = and(...conds);
-  const [rows, total] = await Promise.all([
-    db
-      .select({
-        sale: sales,
-        customerName: customers.name,
-      })
+
+  const { rows, total, items } = await withTenantTx(user, async (tx) => {
+    const rows = await tx
+      .select({ sale: sales, customerName: customers.name })
       .from(sales)
       .leftJoin(customers, eq(sales.customerId, customers.id))
       .where(where)
       .orderBy(desc(sales.saleDate))
       .limit(limit)
-      .offset(offset),
-    db.select({ c: count() }).from(sales).where(where),
-  ]);
-  // Attach line items for the page of results.
-  const items = rows.length
-    ? await db
-        .select({ item: saleItems, productName: products.name, unit: products.unit })
-        .from(saleItems)
-        .innerJoin(products, eq(saleItems.productId, products.id))
-        .where(eq(saleItems.tenantId, user.tenantId))
-    : [];
+      .offset(offset);
+    const total = await tx.select({ c: count() }).from(sales).where(where);
+    const items = rows.length
+      ? await tx
+          .select({ item: saleItems, productName: products.name, unit: products.unit })
+          .from(saleItems)
+          .innerJoin(products, eq(saleItems.productId, products.id))
+          .where(eq(saleItems.tenantId, user.tenantId))
+      : [];
+    return { rows, total, items };
+  });
+
   const bySale = new Map<string, unknown[]>();
   for (const row of items) {
     if (!rows.some((r) => r.sale.id === row.item.saleId)) continue;

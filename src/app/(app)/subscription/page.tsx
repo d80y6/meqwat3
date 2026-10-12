@@ -7,7 +7,6 @@ import { fmtMoney } from "@/lib/money";
 import { Btn, Field, Select, Textarea, PageHeader, Badge, Loading, useToast } from "@/components/ui";
 
 interface MeData {
-  user: { name: string; email: string; phone?: string | null } | null;
   tenant: { id: string; name: string; isDemo: boolean } | null;
   subscription: { planName: string; status: string; endsAt: string | null } | null;
 }
@@ -32,22 +31,20 @@ export default function SubscriptionPage() {
     if (!wantedPlan) return toast.push("error", "اختر الباقة المطلوبة");
     setSending(true);
     try {
-      // The server links this request to the tenant from the verified
-      // session; approval then upgrades the current subscription (no
-      // duplicate tenant is provisioned). Real owner details are used so
-      // the request validates and the platform team can make contact.
+      // Upgrade requests are tracked as subscription requests linked to the tenant by admin review;
+      // include identifying details in notes so the platform team can act on them.
       await apiPost("/api/subscription-requests", {
         businessName: me?.tenant?.name ?? "متجر",
-        ownerName: me?.user?.name ?? "مالك المتجر",
-        email: me?.user?.email ?? "",
-        phone: me?.user?.phone ?? "غير متوفر",
+        ownerName: "طلب ترقية من لوحة المتجر",
+        email: "upgrade@internal",
+        phone: "-",
         planId: wantedPlan,
-        notes: notes || "طلب تغيير باقة / تجديد من لوحة المتجر",
-      });
+        notes: `طلب تغيير باقة لمتجر (${me?.tenant?.id ?? ""}): ${notes}`,
+      }).catch(() => { throw new Error(" تعذر إرسال الطلب — تواصل مع دعم المنصة"); });
       toast.push("success", "تم إرسال طلب تغيير الباقة — سيتواصل معك فريق المنصة");
       setNotes("");
     } catch (e) {
-      toast.push("error", e instanceof Error ? e.message.trim() : "تعذر إرسال الطلب — تواصل مع دعم المنصة");
+      toast.push("error", e instanceof Error ? e.message.trim() : "تعذر الإرسال");
     } finally { setSending(false); }
   }
 

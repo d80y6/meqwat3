@@ -1,0 +1,35 @@
+import { redirect } from "next/navigation";
+import type { ReactNode } from "react";
+import { getCurrentUser } from "@/lib/auth";
+import { db } from "@/db";
+import { tenants } from "@/db/schema";
+import { eq } from "drizzle-orm";
+import { ROLE_PERMISSIONS } from "@/lib/permissions";
+import Shell from "@/components/Shell";
+
+export const dynamic = "force-dynamic";
+
+export default async function AppLayout({ children }: { children: ReactNode }) {
+  const user = await getCurrentUser();
+  if (!user) redirect("/login");
+
+  let tenantName: string | null = null;
+  let isDemo = false;
+  if (user.tenantId) {
+    const [tenant] = await db.select().from(tenants).where(eq(tenants.id, user.tenantId)).limit(1);
+    if (!tenant || tenant.status !== "active") redirect("/login?error=suspended");
+    tenantName = tenant.name;
+    isDemo = tenant.isDemo;
+  }
+
+  return (
+    <Shell
+      user={{ id: user.id, name: user.name, email: user.email, role: user.role, tenantId: user.tenantId }}
+      tenantName={tenantName}
+      isDemo={isDemo}
+      permissions={ROLE_PERMISSIONS[user.role] ?? []}
+    >
+      {children}
+    </Shell>
+  );
+}

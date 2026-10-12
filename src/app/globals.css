@@ -1,0 +1,62 @@
+@import "@fontsource/ibm-plex-sans-arabic/400.css";
+@import "@fontsource/ibm-plex-sans-arabic/500.css";
+@import "@fontsource/ibm-plex-sans-arabic/600.css";
+@import "@fontsource/ibm-plex-sans-arabic/700.css";
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "IBM Plex Sans Arabic", "Segoe UI", Tahoma, system-ui, sans-serif;
+  --color-leaf-50: #f2f7f0;
+  --color-leaf-100: #e0efe0;
+  --color-leaf-200: #c3dfc2;
+  --color-leaf-300: #97c493;
+  --color-leaf-400: #67a562;
+  --color-leaf-500: #468741;
+  --color-leaf-600: #346b31;
+  --color-leaf-700: #2a5528;
+  --color-leaf-800: #234422;
+  --color-leaf-900: #1d381e;
+  --color-leaf-950: #0e1f10;
+  --color-sand-400: #d9a441;
+  --color-sand-500: #c08c2a;
+}
+
+html {
+  font-family: var(--font-sans);
+}
+
+body {
+  background: #f6f7f4;
+  color: #1c2420;
+}
+
+/* Numeric inputs & money stay LTR for readability inside RTL UI */
+input[type="number"], .ltr-nums {
+  direction: ltr;
+  text-align: left;
+  font-variant-numeric: tabular-nums;
+}
+.tabnums { font-variant-numeric: tabular-nums; }
+
+/* Slim scrollbars for sidebar / POS product grid */
+.slim-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+.slim-scroll::-webkit-scrollbar-thumb { background: #cbd5cb; border-radius: 999px; }
+.slim-scroll::-webkit-scrollbar-track { background: transparent; }
+
+/* Print: clean invoice/receipt printing */
+@media print {
+  .no-print { display: none !important; }
+  body { background: #fff; }
+}
+
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-slide-up { animation: slide-up 0.25s ease-out; }
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.animate-fade-in { animation: fade-in 0.2s ease-out; }

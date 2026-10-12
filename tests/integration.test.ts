@@ -40,8 +40,13 @@ suite("Meqwat transactional core (real PostgreSQL)", () => {
 
   afterAll(async () => {
     // Delete in FK dependency order (item rows reference products).
-    const { saleItems, purchaseItems, inventoryMovements, financialTransactions, payments, sales, purchases, shifts, processedMutations, tenantCounters, subscriptions } = await import("../src/db/schema");
-    for (const tid of [tenantA, tenantB]) {
+    // Sweep EVERY test tenant (slug prefix test-), so even a run that died
+    // mid-suite can never leave orphaned tenants behind.
+    const { saleItems, purchaseItems, inventoryMovements, financialTransactions, payments, sales, purchases, shifts, processedMutations, tenantCounters, subscriptions, auditLogs } = await import("../src/db/schema");
+    const { like } = await import("drizzle-orm");
+    const testTenants = await db.select({ id: tenants.id }).from(tenants).where(like(tenants.slug, "test-%"));
+    const ids = [...new Set([tenantA, tenantB, ...testTenants.map((t) => t.id)])];
+    for (const tid of ids) {
       await db.delete(saleItems).where(eq(saleItems.tenantId, tid));
       await db.delete(purchaseItems).where(eq(purchaseItems.tenantId, tid));
       await db.delete(inventoryMovements).where(eq(inventoryMovements.tenantId, tid));
@@ -53,6 +58,7 @@ suite("Meqwat transactional core (real PostgreSQL)", () => {
       await db.delete(processedMutations).where(eq(processedMutations.tenantId, tid));
       await db.delete(tenantCounters).where(eq(tenantCounters.tenantId, tid));
       await db.delete(subscriptions).where(eq(subscriptions.tenantId, tid));
+      await db.delete(auditLogs).where(eq(auditLogs.tenantId, tid));
       await db.delete(products).where(eq(products.tenantId, tid));
       await db.delete(customers).where(eq(customers.tenantId, tid));
       await db.delete(suppliers).where(eq(suppliers.tenantId, tid));

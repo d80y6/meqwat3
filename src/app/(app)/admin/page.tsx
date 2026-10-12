@@ -10,7 +10,7 @@ interface TenantRow {
   tenant: { id: string; name: string; slug: string; city: string | null; phone: string | null; status: string; isDemo: boolean; createdAt: string };
   planName: string | null; subStatus: string | null; endsAt: string | null; usersCount: number; salesCount: number;
 }
-interface RequestRow { id: string; businessName: string; ownerName: string; email: string; phone: string; city: string | null; planName: string | null; status: string; notes: string | null; createdAt: string }
+interface RequestRow { id: string; businessName: string; ownerName: string; email: string; phone: string; city: string | null; planName: string | null; status: string; notes: string | null; tenantId: string | null; createdAt: string }
 interface PlanRow { id: string; name: string; priceMonthly: string; maxUsers: number; maxProducts: number; maxBranches: number; isActive: boolean; features: string[] }
 
 export default function AdminPage() {
@@ -82,9 +82,13 @@ export default function AdminPage() {
   async function review(req: RequestRow, action: "approve" | "reject") {
     try {
       if (action === "approve") {
-        const res = await apiPost<{ tenant: { name: string }; owner: { email: string }; tempPassword: string }>("/api/admin/subscription-requests", { requestId: req.id, action });
-        setCredentials({ email: res.owner.email, tempPassword: res.tempPassword, tenantName: res.tenant.name });
-        toast.push("success", "تمت الموافقة وإنشاء المتجر");
+        const res = await apiPost<{ tenant: { name: string }; ownerEmail: string; tempPassword: string | null; upgraded: boolean; planName: string }>("/api/admin/subscription-requests", { requestId: req.id, action });
+        if (res.upgraded) {
+          toast.push("success", `تمت الموافقة — طُبّقت باقة «${res.planName}» على متجر ${res.tenant.name} ومُدّدت ٣٠ يوماً`);
+        } else if (res.tempPassword) {
+          setCredentials({ email: res.ownerEmail, tempPassword: res.tempPassword, tenantName: res.tenant.name });
+          toast.push("success", "تمت الموافقة وإنشاء المتجر");
+        }
       } else {
         await apiPost("/api/admin/subscription-requests", { requestId: req.id, action });
         toast.push("success", "تم رفض الطلب");
@@ -165,7 +169,7 @@ export default function AdminPage() {
           <TableShell head={["المتجر", "المالك", "تواصل", "الباقة", "الحالة", ""]}>
             {requests.map((r) => (
               <tr key={r.id} className="border-b border-slate-50">
-                <td className="px-4 py-3"><p className="font-semibold">{r.businessName}</p><p className="text-xs text-slate-400">{r.city ?? ""} · {new Date(r.createdAt).toLocaleDateString("ar-YE")}</p>{r.notes && <p className="text-xs text-slate-400">{r.notes}</p>}</td>
+                <td className="px-4 py-3"><p className="font-semibold">{r.businessName} {r.tenantId && <Badge tone="blue">ترقية متجر قائم</Badge>}</p><p className="text-xs text-slate-400">{r.city ?? ""} · {new Date(r.createdAt).toLocaleDateString("ar-YE")}</p>{r.notes && <p className="text-xs text-slate-400">{r.notes}</p>}</td>
                 <td className="px-4 py-3">{r.ownerName}</td>
                 <td className="px-4 py-3"><p dir="ltr" className="text-left tabnums">{r.phone}</p><p dir="ltr" className="text-left text-xs text-slate-400">{r.email}</p></td>
                 <td className="px-4 py-3">{r.planName ?? "—"}</td>

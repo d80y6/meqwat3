@@ -1,0 +1,67 @@
+import 'dart:convert';
+import '../api/api_client.dart';
+import '../database/app_database.dart';
+
+class SyncOutcome {
+  const SyncOutcome({this.applied = 0, this.duplicates = 0, this.conflicts = 0, this.failed = 0});
+  final int applied;
+  final int duplicates;
+  final int conflicts;
+  final int failed;
+}
+
+/// Pushes the SQLite outbox to POST /api/sync and applies the server's
+/// per-operation verdict — the exact same idempotency contract as the web:
+///   applied   → committed now (remove from outbox, record as confirmed)
+///   duplicate → committed earlier; safe retry (remove from outbox)
+///   conflict  → business rule rejects it now (keep, surface to cashier)
+///   error     → transient (keep as pending for the next attempt)
+class SyncRepository {
+  SyncRepository({required this.api, required this.db});
+  final ApiClient api;
+  final AppDatabase db;
+
+  Future<SyncOutcome> syncNow() async {
+    final ops = await db.pendingOutbox();
+    if (ops.isEmpty) return const SyncOutcome();
+
+    final data = await api.post('/api/sync', {
+      'operations': ops.map((o) => {
+            'clientMutationId': o['client_mutation_id'],
+            'type': o['type'],
+            'payload': jsonDecode(o['payload'] as String),
+          }).toList(),
+    });
+
+    var applied = 0, duplicates = 0, conflicts = 0, failed = 0;
+    final results = (data['results'] as List).cast<Map<String, dynamic>>();
+    for (final r in results) {
+      final id = r['clientMutationId'] as String;
+      switch (r['status']) {
+        case 'applied':
+          applied++;
+          await db.deleteOutbox(id);
+          final result = (r['result'] as Map<String, dynamic>?);
+          if (result != null && result['invoiceNo'] != null) {
+            await db.recordConfirmed({
+              'id': result['id'],
+              'invoice_no': result['invoiceNo'],
+              'total': result['totalAmount'],
+              'origin_mutation_id': id,
+              'confirmed_at': DateTime.now().toIso8601String(),
+            });
+          }
+        case 'duplicate':
+          duplicates++;
+          await db.deleteOutbox(id);
+        case 'conflict':
+          conflicts++;
+          await db.markOutbox(id, 'conflict', r['error']?.toString());
+        default:
+          failed++;
+          await db.markOutbox(id, 'error', r['error']?.toString());
+      }
+    }
+    return SyncOutcome(applied: applied, duplicates: duplicates, conflicts: conflicts, failed: failed);
+  }
+}

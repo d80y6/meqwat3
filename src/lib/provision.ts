@@ -1,7 +1,7 @@
 import { randomBytes } from "crypto";
 import { db } from "@/db";
 import { tenants, subscriptions, plans, users, cashRegisters, subscriptionRequests } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { hashPassword } from "./auth";
 import { ApiError } from "./api";
 import { withTenantTx } from "./services";
@@ -89,8 +89,23 @@ export async function provisionTenant(input: ProvisionInput) {
   };
 }
 
-/** Approve a pending subscription request → provision workspace + link. */
-export async function approveRequest(requestId: string, reviewerId: string) {
+export interface ApproveResult {
+  tenant: typeof tenants.$inferSelect;
+  ownerEmail: string;
+  /** One-time password for newly provisioned tenants; null for upgrades. */
+  tempPassword: string | null;
+  upgraded: boolean;
+  planName: string;
+}
+
+/**
+ * Approve a pending subscription request.
+ * - New signup (no tenant link): provision a fresh workspace.
+ * - Existing tenant (linked by verified session at submission time): apply
+ *   the requested plan to the tenant's current subscription and reactivate
+ *   it for 30 days — never provision a duplicate tenant.
+ */
+export async function approveRequest(requestId: string, reviewerId: string): Promise<ApproveResult> {
   const [request] = await db
     .select()
     .from(subscriptionRequests)
@@ -98,6 +113,45 @@ export async function approveRequest(requestId: string, reviewerId: string) {
     .limit(1);
   if (!request) throw new ApiError("الطلب غير موجود", 404);
   if (request.status !== "pending") throw new ApiError("تمت مراجعة هذا الطلب مسبقاً");
+
+  if (request.tenantId) {
+    const [tenant] = await db.select().from(tenants).where(eq(tenants.id, request.tenantId)).limit(1);
+    if (!tenant) throw new ApiError("المتجر المرتبط بالطلب غير موجود", 404);
+    const [latest] = await db
+      .select()
+      .from(subscriptions)
+      .where(eq(subscriptions.tenantId, tenant.id))
+      .orderBy(desc(subscriptions.createdAt))
+      .limit(1);
+    if (!latest) throw new ApiError("لا يوجد اشتراك حالي لهذا المتجر");
+    let planName = "";
+    if (request.planId) {
+      const [plan] = await db.select().from(plans).where(eq(plans.id, request.planId)).limit(1);
+      if (!plan) throw new ApiError("الباقة المطلوبة غير موجودة");
+      planName = plan.name;
+    }
+    const base = latest.endsAt && latest.endsAt > new Date() ? latest.endsAt : new Date();
+    await db.transaction(async (tx) => {
+      await tx
+        .update(subscriptions)
+        .set({
+          ...(request.planId ? { planId: request.planId } : {}),
+          status: "active",
+          endsAt: new Date(base.getTime() + 30 * 86400_000),
+        })
+        .where(eq(subscriptions.id, latest.id));
+      await tx
+        .update(subscriptionRequests)
+        .set({ status: "approved", reviewedBy: reviewerId, reviewedAt: new Date() })
+        .where(eq(subscriptionRequests.id, requestId));
+    });
+    if (!planName) {
+      const [plan] = await db.select().from(plans).where(eq(plans.id, latest.planId)).limit(1);
+      planName = plan?.name ?? "";
+    }
+    return { tenant, ownerEmail: request.email, tempPassword: null, upgraded: true, planName };
+  }
+
   const result = await provisionTenant({
     businessName: request.businessName,
     ownerName: request.ownerName,
@@ -112,5 +166,11 @@ export async function approveRequest(requestId: string, reviewerId: string) {
       .set({ status: "approved", tenantId: result.tenant.id, reviewedBy: reviewerId, reviewedAt: new Date() })
       .where(eq(subscriptionRequests.id, requestId));
   });
-  return result;
+  return {
+    tenant: result.tenant,
+    ownerEmail: result.owner.email,
+    tempPassword: result.tempPassword,
+    upgraded: false,
+    planName: result.plan.name,
+  };
 }

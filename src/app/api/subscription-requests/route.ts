@@ -5,7 +5,12 @@ import { ok, fail, handler, requireTenantUser, audit } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
 
-/** Public: a prospective shop submits a subscription request. */
+/**
+ * Public: a prospective shop submits a subscription request.
+ * If the caller is an authenticated tenant user, the request is linked to
+ * their tenant (plan-change/renewal request) — approval then upgrades the
+ * existing subscription instead of provisioning a duplicate tenant.
+ */
 export async function POST(req: Request) {
   const body = await req.json().catch(() => null);
   const businessName = String(body?.businessName ?? "").trim();
@@ -22,16 +27,22 @@ export async function POST(req: Request) {
     if (!plan) return fail("الباقة المختارة غير موجودة");
     planId = plan.id;
   }
+  // Tenant linkage is derived from the verified session ONLY — never from
+  // client-supplied ids, so public signups cannot spoof another tenant.
+  const { getCurrentUser } = await import("@/lib/auth");
+  const sessionUser = await getCurrentUser().catch(() => null);
+  const tenantId = sessionUser?.tenantId ?? null;
   const [created] = await db
     .insert(subscriptionRequests)
     .values({
       businessName, ownerName, email, phone,
       city: body?.city ? String(body.city) : null,
       planId,
+      tenantId,
       notes: body?.notes ? String(body.notes) : null,
     })
     .returning();
-  return ok({ id: created.id, status: created.status }, 201);
+  return ok({ id: created.id, status: created.status, linked: Boolean(tenantId) }, 201);
 }
 
 /** Tenant owners can view requests they own (matched by tenant) and plans. */

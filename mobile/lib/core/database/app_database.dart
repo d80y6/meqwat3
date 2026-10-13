@@ -52,7 +52,9 @@ class AppDatabase {
   Future<void> replaceProducts(List<Map<String, Object?>> rows) async {
     final b = _db.batch();
     b.delete('products');
-    for (final r in rows) b.insert('products', r, conflictAlgorithm: ConflictAlgorithm.replace);
+    for (final r in rows) {
+      b.insert('products', r, conflictAlgorithm: ConflictAlgorithm.replace);
+    }
     await b.commit(noResult: true);
   }
 

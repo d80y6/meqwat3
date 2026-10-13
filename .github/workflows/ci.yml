@@ -69,7 +69,9 @@ jobs:
       - name: Generate Android scaffolding (platform folders are generated, not committed)
         run: flutter create --project-name meqwat_mobile --org com.meqwat --platforms=android .
       - name: Restore committed sources (in case create touched them)
-        run: git checkout -- pubspec.yaml lib analysis_options.yaml test || true
+        run: |
+          git checkout -- pubspec.yaml lib analysis_options.yaml test || true
+          rm -f test/widget_test.dart
       - run: flutter pub get
       - name: Analyze
         run: flutter analyze

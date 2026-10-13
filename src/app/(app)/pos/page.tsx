@@ -218,7 +218,7 @@ export default function PosPage() {
       </div>
 
       {lastInvoice && (
-        <div className={`mb-4 flex items-center gap-3 rounded-2xl border p-4 ${lastInvoice.offline ? "border-amber-200 bg-amber-50" : "border-leaf-200 bg-leaf-50"}`} role="status">
+        <div className={`mb-4 flex items-center gap-3 rounded-2xl border p-4 print:border print:shadow-none ${lastInvoice.offline ? "border-amber-200 bg-amber-50" : "border-leaf-200 bg-leaf-50"}`} role="status">
           {lastInvoice.offline ? <AlertTriangle className="h-6 w-6 text-amber-600" /> : <CheckCircle2 className="h-6 w-6 text-leaf-700" />}
           <div className="flex-1">
             <p className="font-bold text-slate-900">
@@ -226,7 +226,15 @@ export default function PosPage() {
             </p>
             <p className="text-sm text-slate-600">الإجمالي: {fmtMoney(lastInvoice.total)}{lastInvoice.offline ? " — ستظهر في المبيعات بعد المزامنة" : ""}</p>
           </div>
-          <button onClick={() => setLastInvoice(null)} className="text-slate-400 hover:text-slate-600" aria-label="إغلاق التنبيه"><XCircle className="h-5 w-5" /></button>
+          {!lastInvoice.offline && lastInvoice.invoiceNo > 0 && (
+            <Btn variant="secondary" onClick={() => {
+              const w = window.open("", "_blank", "width=360,height=600");
+              if (!w) return;
+              w.document.write(`<html dir="rtl"><head><meta charset="utf-8"><title>فاتورة #${lastInvoice.invoiceNo}</title><style>body{font-family:system-ui;padding:16px}h1{font-size:18px}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{border:1px solid #ddd;padding:6px;text-align:right;font-size:13px}.total{font-weight:bold;background:#f0fdf4}</style></head><body><h1>مقوات — فاتورة #${lastInvoice.invoiceNo}</h1><p>الإجمالي: ${lastInvoice.total} ر.ي</p><p style="color:#666;font-size:12px">الطباعة من المتصفح — تتكامل مع طابعة الإيصالات الحرارية عبر driver النظام (ESC/POS raw عند الحاجة عبر برنامج وسيط).</p><script>window.onload=()=>{window.print();setTimeout(()=>window.close(),500)}<\/script></body></html>`);
+              w.document.close();
+            }} className="px-3 py-1.5 text-xs">طباعة الإيصال</Btn>
+          )}
+          <button onClick={() => setLastInvoice(null)} className="text-slate-400 hover:text-slate-600 no-print" aria-label="إغلاق التنبيه"><XCircle className="h-5 w-5" /></button>
         </div>
       )}
 

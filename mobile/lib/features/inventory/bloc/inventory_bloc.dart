@@ -28,6 +28,15 @@ class SpoilageSubmitted extends InventoryEvent {
   List<Object?> get props => [productId, qty, notes];
 }
 
+class CountAdjustmentSubmitted extends InventoryEvent {
+  const CountAdjustmentSubmitted({required this.productId, required this.countedQty, this.notes});
+  final String productId;
+  final String countedQty;
+  final String? notes;
+  @override
+  List<Object?> get props => [productId, countedQty, notes];
+}
+
 /* --------------------------------- states -------------------------------- */
 enum InventoryStatus { loading, ready, failure }
 
@@ -57,6 +66,7 @@ class InventoryBloc extends Bloc<InventoryEvent, InventoryState> {
     on<InventoryStarted>(_load);
     on<InventoryRefreshRequested>(_load);
     on<SpoilageSubmitted>(_onSpoilage);
+    on<CountAdjustmentSubmitted>(_onAdjustment);
   }
 
   final InventoryRepository repository;
@@ -81,6 +91,18 @@ class InventoryBloc extends Bloc<InventoryEvent, InventoryState> {
       emit(state.copyWith(message: e.message));
     } catch (_) {
       emit(state.copyWith(message: 'تسجيل الهالك يتطلب اتصالاً بالإنترنت'));
+    }
+  }
+
+  Future<void> _onAdjustment(CountAdjustmentSubmitted event, Emitter<InventoryState> emit) async {
+    try {
+      final res = await repository.recordCount(productId: event.productId, countedQty: event.countedQty, notes: event.notes);
+      emit(state.copyWith(message: 'تمت تسوية الجرد — المخزون ${res['newStock']}'));
+      add(const InventoryRefreshRequested());
+    } on ApiException catch (e) {
+      emit(state.copyWith(message: e.message));
+    } catch (_) {
+      emit(state.copyWith(message: 'التسوية تتطلب اتصالاً بالإنترنت'));
     }
   }
 }

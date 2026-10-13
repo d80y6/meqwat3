@@ -1,7 +1,8 @@
 import { db } from "@/db";
 import { cashRegisters, shifts } from "@/db/schema";
-import { and, eq, desc } from "drizzle-orm";
+import { and, eq, count, desc } from "drizzle-orm";
 import { ok, handler, requireTenantUser, audit, ApiError } from "@/lib/api";
+import { getTenantPlan } from "@/lib/services";
 
 export const dynamic = "force-dynamic";
 
@@ -24,6 +25,14 @@ export const POST = handler(async (req: Request) => {
   const body = await req.json();
   const name = String(body?.name ?? "").trim();
   if (!name) throw new ApiError("اسم الصندوق مطلوب");
+  const plan = await getTenantPlan(user.tenantId);
+  if (plan) {
+    const [{ c }] = await db
+      .select({ c: count() })
+      .from(cashRegisters)
+      .where(and(eq(cashRegisters.tenantId, user.tenantId), eq(cashRegisters.isActive, true)));
+    if (c >= Number(plan.maxBranches)) throw new ApiError(`الحد الأقصى للصناديق حسب الخطة (${plan.maxBranches})`, 409);
+  }
   const [created] = await db
     .insert(cashRegisters)
     .values({ tenantId: user.tenantId, name })

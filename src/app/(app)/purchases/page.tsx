@@ -1,8 +1,9 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
-import { Plus, Trash2, ChevronDown, ChevronLeft } from "lucide-react";
-import { apiGet, apiPost } from "@/lib/client";
+import { Plus, Trash2, ChevronDown, ChevronLeft, WifiOff, CloudUpload, RefreshCw, Undo2 } from "lucide-react";
+import { apiGet, apiPost, ClientError, newMutationId } from "@/lib/client";
+import { enqueue, getQueue, subscribeQueue, syncQueue, isOnline, type QueuedOp } from "@/lib/offline";
 import { fmtMoney, fmtQty, mulQtyPrice, toCents, fromCents } from "@/lib/money";
 import { Btn, Field, Input, Select, Textarea, Modal, PageHeader, TableShell, Badge, EmptyState, Loading, useToast } from "@/components/ui";
 
@@ -27,6 +28,14 @@ export default function PurchasesPage() {
   const [notes, setNotes] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [queue, setQueue] = useState<QueuedOp[]>([]);
+  const [syncing, setSyncing] = useState(false);
+  const [online, setOnline] = useState(true);
+  // purchase return
+  const [returnFor, setReturnFor] = useState<Purchase | null>(null);
+  const [returnLines, setReturnLines] = useState<{ purchaseItemId: string; qty: string }[]>([]);
+  const [refundMethod, setRefundMethod] = useState<"cash" | "debt">("debt");
+  const [returnSaving, setReturnSaving] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -43,6 +52,18 @@ export default function PurchasesPage() {
     finally { setLoading(false); }
   }, [toast]);
   useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    const update = () => setQueue(getQueue().filter((q) => q.type === "purchase"));
+    update();
+    const unsub = subscribeQueue(update);
+    const on = () => setOnline(true);
+    const off = () => setOnline(false);
+    setOnline(isOnline());
+    window.addEventListener("online", on);
+    window.addEventListener("offline", off);
+    return () => { unsub(); window.removeEventListener("online", on); window.removeEventListener("offline", off); };
+  }, []);
 
   const totalCents = useMemo(
     () => lines.reduce((sum, l) => sum + (l.productId ? toCents(mulQtyPrice(l.qty || 0, l.unitCost || 0)) : 0), 0),
@@ -62,6 +83,17 @@ export default function PurchasesPage() {
     }));
   }
 
+  async function doSync() {
+    setSyncing(true);
+    try {
+      const out = await syncQueue();
+      if (out.applied + out.duplicates) toast.push("success", `تمت مزامنة ${out.applied + out.duplicates} فاتورة شراء`);
+      if (out.conflicts.length) toast.push("error", `${out.conflicts.length} عملية متعارضة`);
+      void load();
+    } catch { toast.push("error", "تعذّرت المزامنة"); }
+    finally { setSyncing(false); }
+  }
+
   async function save(e: React.FormEvent) {
     e.preventDefault();
     setError("");
@@ -69,29 +101,69 @@ export default function PurchasesPage() {
     const valid = lines.filter((l) => l.productId && Number(l.qty) > 0);
     if (valid.length === 0) return setError("أضف صنفاً واحداً على الأقل بكمية صحيحة");
     if (Number(paidAmount) > totalCents / 100) return setError("المبلغ المدفوع أكبر من إجمالي الشراء");
+    const payload = {
+      supplierId, paidAmount, notes: notes || undefined,
+      items: valid.map((l) => ({ productId: l.productId, qty: l.qty, unitCost: l.unitCost })),
+    };
+    const label = `فاتورة شراء — ${valid.length} صنف — ${fmtMoney(fromCents(totalCents))}`;
     setSaving(true);
     try {
-      const res = await apiPost<{ id: string; totalAmount: string; liability: string }>("/api/purchases", {
-        supplierId, paidAmount, notes: notes || undefined,
-        items: valid.map((l) => ({ productId: l.productId, qty: l.qty, unitCost: l.unitCost })),
-      });
+      if (!isOnline()) throw new TypeError("offline");
+      const res = await apiPost<{ id: string; totalAmount: string; liability: string }>("/api/purchases", { ...payload, clientMutationId: newMutationId() });
       toast.push("success", `تم تسجيل الشراء — الإجمالي ${fmtMoney(res.totalAmount)}${Number(res.liability) > 0 ? `، يُرحَّل للمورّد ${fmtMoney(res.liability)}` : ""}`);
       setModal(false);
       setLines([{ productId: "", qty: "1", unitCost: "" }]);
       setPaidAmount("0");
       setNotes("");
       void load();
-    } catch (err) { setError(err instanceof Error ? err.message : "تعذر الحفظ"); }
-    finally { setSaving(false); }
+    } catch (err) {
+      if (err instanceof ClientError) {
+        setError((err as ClientError).message);
+      } else {
+        // offline / network → queue idempotently; server deduplicates on clientMutationId
+        enqueue("purchase", payload, label);
+        const offline = err instanceof TypeError && (err as TypeError).message === "offline";
+        toast.push("success", offline ? "لا يوجد اتصال — حُفظت فاتورة الشراء محلياً وستُزامَن تلقائياً" : "تعذّر الاتصال — حُفظت فاتورة الشراء محلياً وستُزامَن لاحقاً");
+        setModal(false);
+        setLines([{ productId: "", qty: "1", unitCost: "" }]);
+        setPaidAmount("0"); setNotes("");
+      }
+    } finally { setSaving(false); }
+  }
+
+  async function submitReturn() {
+    if (!returnFor) return;
+    const valid = returnLines.filter((r) => Number(r.qty) > 0);
+    if (valid.length === 0) return toast.push("error", "اختر بنوداً وكميات للإرجاع");
+    setReturnSaving(true);
+    try {
+      const res = await apiPost<{ refundAmount: string }>(`/api/purchases/${returnFor.id}/return`, { items: valid, refundMethod });
+      toast.push("success", `تم إرجاع المشتريات — المبلغ المرتجع ${fmtMoney(res.refundAmount)}`);
+      setReturnFor(null); setReturnLines([]);
+      void load();
+    } catch (err) { toast.push("error", err instanceof Error ? err.message : "تعذر إرجاع المشتريات"); }
+    finally { setReturnSaving(false); }
   }
 
   return (
     <div>
-      <PageHeader title="المشتريات" subtitle="شراء القات من المزارعين والوكلاء — يزيد المخزون والمستحقات" actions={<Btn onClick={() => setModal(true)}><Plus className="h-4 w-4" /> فاتورة شراء</Btn>} />
+      <PageHeader title="المشتريات" subtitle="شراء القات من المزارعين والوكلاء — يزيد المخزون والمستحقات" actions={
+        <>
+          {!online && <Badge tone="amber"><WifiOff className="h-3.5 w-3.5" /> دون اتصال</Badge>}
+          {queue.length > 0 && <Btn variant="amber" onClick={doSync} loading={syncing}><CloudUpload className="h-4 w-4" /> مزامنة ({queue.length})</Btn>}
+          <Btn onClick={() => setModal(true)}><Plus className="h-4 w-4" /> فاتورة شراء</Btn>
+        </>
+      } />
+      {queue.length > 0 && (
+        <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm">
+          <div className="flex items-center gap-2 font-bold text-amber-900"><RefreshCw className={`h-4 w-4 ${syncing ? "animate-spin" : ""}`} /> فواتير شراء معلّقة محلياً ({queue.length}) — ستُزامَن تلقائياً عند عودة الاتصال</div>
+          <ul className="mt-2 space-y-1 text-xs text-amber-800">{queue.map((q) => <li key={q.clientMutationId}>• {q.label}</li>)}</ul>
+        </div>
+      )}
       {loading ? <Loading /> : items.length === 0 ? (
         <EmptyState title="لا توجد مشتريات بعد" hint="سجّل أول فاتورة شراء وسيُحدَّث المخزون ومستحقات المورّد تلقائياً." action={<Btn onClick={() => setModal(true)}><Plus className="h-4 w-4" /> فاتورة شراء جديدة</Btn>} />
       ) : (
-        <TableShell head={["التاريخ", "المورّد", "الإجمالي", "المدفوع", "المتبقي", "الأصناف"]}>
+        <TableShell head={["التاريخ", "المورّد", "الإجمالي", "المدفوع", "المتبقي", "الأصناف", ""]}>
           {items.map((p) => (
             <Fragment key={p.id}>
               <tr className="border-b border-slate-50 hover:bg-slate-50/50">
@@ -105,10 +177,15 @@ export default function PurchasesPage() {
                     {p.items.length} صنف {expanded === p.id ? <ChevronDown className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
                   </button>
                 </td>
+                <td className="px-4 py-3">
+                  <button onClick={() => { setReturnFor(p); setReturnLines(p.items.map((it) => ({ purchaseItemId: it.id, qty: "0" }))); }} className="inline-flex items-center gap-1 rounded-lg bg-slate-100 px-2 py-1 text-xs font-semibold hover:bg-slate-200">
+                    <Undo2 className="h-3.5 w-3.5" /> إرجاع
+                  </button>
+                </td>
               </tr>
               {expanded === p.id && (
                 <tr key={`${p.id}-items`} className="bg-slate-50/60">
-                  <td colSpan={6} className="px-6 py-3">
+                  <td colSpan={7} className="px-6 py-3">
                     <ul className="space-y-1 text-sm">
                       {p.items.map((it) => (
                         <li key={it.id} className="flex justify-between">
@@ -168,7 +245,29 @@ export default function PurchasesPage() {
           </div>
           <Field label="ملاحظات"><Textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="رقم سيارة النقل، جودة المحصول…" /></Field>
           <div className="flex gap-2"><Btn type="submit" loading={saving} className="flex-1">حفظ فاتورة الشراء</Btn><Btn type="button" variant="secondary" onClick={() => setModal(false)}>إلغاء</Btn></div>
+          {!online && <p className="text-center text-xs font-semibold text-amber-700">أنت دون اتصال — ستُحفظ الفاتورة محلياً مع معرّف ثابت يمنع التكرار عند المزامنة.</p>}
         </form>
+      </Modal>
+
+      <Modal open={!!returnFor} onClose={() => setReturnFor(null)} title={returnFor ? `إرجاع مشتريات — ${returnFor.supplierName}` : "إرجاع مشتريات"}>
+        {returnFor && (
+          <div className="space-y-4">
+            <p className="text-sm text-slate-500">اختر الكميات المراد إرجاعها — يُنقص المخزون وتُخفَّض مستحقات المورّد أو يُرد نقداً.</p>
+            {returnFor.items.map((it, idx) => (
+              <div key={it.id} className="flex items-center gap-3 rounded-xl bg-slate-50 px-3 py-2">
+                <span className="flex-1 text-sm font-semibold">{it.productName} — متاح {fmtQty(it.qty)} × {fmtMoney(it.unitCost)}</span>
+                <Input type="number" min="0" max={it.qty} step="0.5" value={returnLines[idx]?.qty ?? "0"} onChange={(e) => setReturnLines((ls) => ls.map((r, i) => i === idx ? { ...r, qty: e.target.value } : r))} className="w-24 ltr-nums" aria-label={`كمية إرجاع ${it.productName}`} />
+              </div>
+            ))}
+            <Field label="طريقة الاسترداد">
+              <Select value={refundMethod} onChange={(e) => setRefundMethod(e.target.value as "cash" | "debt")}>
+                <option value="debt">خفض مستحقات المورّد</option>
+                <option value="cash">استرداد نقدي (يسجّل حركة مالية)</option>
+              </Select>
+            </Field>
+            <Btn onClick={submitReturn} loading={returnSaving} className="w-full"><Undo2 className="h-4 w-4" /> تأكيد إرجاع المشتريات</Btn>
+          </div>
+        )}
       </Modal>
     </div>
   );

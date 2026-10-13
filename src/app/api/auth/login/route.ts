@@ -33,6 +33,23 @@ export async function POST(req: Request) {
     if (!tenant) return fail("المتجر المرتبط بالحساب غير موجود", 403);
     if (tenant.status !== "active") return fail("اشتراك المتجر موقوف حالياً، تواصل مع إدارة المنصة", 403, "TENANT_SUSPENDED");
     tenantName = tenant.name;
+    // Subscription expiry also blocks login (mirrors assertTenantWritable for writes)
+    const { subscriptions } = await import("@/db/schema");
+    const { sql } = await import("drizzle-orm");
+    const [sub] = await db
+      .select({ status: subscriptions.status, endsAt: subscriptions.endsAt })
+      .from(subscriptions)
+      .where(eq(subscriptions.tenantId, tenant.id))
+      .orderBy(sql`${subscriptions.createdAt} desc`)
+      .limit(1);
+    if (sub) {
+      if (sub.status === "cancelled" || sub.status === "expired") {
+        return fail("انتهى اشتراك المتجر، جدّد الاشتراك للمتابعة", 403, "SUBSCRIPTION_EXPIRED");
+      }
+      if (sub.endsAt && sub.endsAt < new Date() && sub.status !== "trial") {
+        return fail("انتهى اشتراك المتجر، جدّد الاشتراك للمتابعة", 403, "SUBSCRIPTION_EXPIRED");
+      }
+    }
   }
 
   const authUser: AuthUser = {

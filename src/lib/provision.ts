@@ -4,7 +4,7 @@ import { tenants, subscriptions, plans, users, cashRegisters, subscriptionReques
 import { desc, eq } from "drizzle-orm";
 import { hashPassword } from "./auth";
 import { ApiError } from "./api";
-import { withTenantTx } from "./services";
+import { withTenantTx } from "./tx";
 
 function slugify(name: string): string {
   const base = name
@@ -92,10 +92,12 @@ export async function provisionTenant(input: ProvisionInput) {
 export interface ApproveResult {
   tenant: typeof tenants.$inferSelect;
   ownerEmail: string;
+  ownerName: string;
   /** One-time password for newly provisioned tenants; null for upgrades. */
   tempPassword: string | null;
   upgraded: boolean;
   planName: string;
+  trialEndsAt?: Date;
 }
 
 /**
@@ -149,7 +151,8 @@ export async function approveRequest(requestId: string, reviewerId: string): Pro
       const [plan] = await db.select().from(plans).where(eq(plans.id, latest.planId)).limit(1);
       planName = plan?.name ?? "";
     }
-    return { tenant, ownerEmail: request.email, tempPassword: null, upgraded: true, planName };
+    const trialEndsAt = new Date(base.getTime() + 30 * 86400_000);
+    return { tenant, ownerEmail: request.email, ownerName: request.ownerName, tempPassword: null, upgraded: true, planName, trialEndsAt };
   }
 
   const result = await provisionTenant({
@@ -169,8 +172,10 @@ export async function approveRequest(requestId: string, reviewerId: string): Pro
   return {
     tenant: result.tenant,
     ownerEmail: result.owner.email,
+    ownerName: result.owner.name,
     tempPassword: result.tempPassword,
     upgraded: false,
     planName: result.plan.name,
+    trialEndsAt: result.trialEndsAt,
   };
 }

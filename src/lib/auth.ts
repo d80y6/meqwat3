@@ -17,13 +17,29 @@ function secret(): Uint8Array {
   if (cachedSecret) return cachedSecret;
   const s = process.env.AUTH_SECRET || process.env.JWT_SECRET;
   if (s) {
+    if (s.length < 32) {
+      throw new Error("[auth] AUTH_SECRET must be at least 32 characters — generate with: openssl rand -hex 32");
+    }
     cachedSecret = new TextEncoder().encode(s);
     return cachedSecret;
   }
-  // Fallback: derive a per-deployment secret from the server-only database
-  // credentials so tokens stay unforgeable without DB access. Production
-  // deployments SHOULD set AUTH_SECRET explicitly (see docs/DECISIONS.md).
-  console.warn("[auth] AUTH_SECRET not set — deriving signing secret from DATABASE_URL. Set AUTH_SECRET in production.");
+  // During `next build` the env may not be populated yet — allow a derived stub then.
+  if (process.env.NEXT_PHASE?.includes("phase-production-build")) {
+    console.warn("[auth] AUTH_SECRET not set during build — using derived stub for static generation only.");
+    const derived = createHash("sha256")
+      .update(`meqwat::build-stub`)
+      .digest("hex");
+    cachedSecret = new TextEncoder().encode(derived);
+    return cachedSecret;
+  }
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(
+      "[auth] AUTH_SECRET is required in production — set a 32+ char random value (openssl rand -hex 32). Refusing to start with derived secret."
+    );
+  }
+  // Development fallback: derive a per-deployment secret from the server-only
+  // database credentials so tokens stay unforgeable without DB access in dev.
+  console.warn("[auth] AUTH_SECRET not set — deriving signing secret from DATABASE_URL (dev only). Set AUTH_SECRET in production.");
   const derived = createHash("sha256")
     .update(`meqwat::${process.env.DATABASE_URL ?? "meqwat-dev"}`)
     .digest("hex");

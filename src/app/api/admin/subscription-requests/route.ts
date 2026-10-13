@@ -47,15 +47,42 @@ export const POST = handler(async (req: Request) => {
     // Deliver one-time credentials by email when SMTP is configured;
     // otherwise they are returned once for manual hand-over by the admin.
     let emailed = false;
+    let mailVia: string | undefined;
     if (result.tempPassword) {
-      const { sendOwnerCredentials } = await import("@/lib/email");
-      emailed = await sendOwnerCredentials({
+      const { sendOwnerCredentials } = await import("@/lib/mail");
+      const r = await sendOwnerCredentials({
         to: result.ownerEmail,
+        ownerName: result.ownerName ?? request.ownerName,
         tenantName: result.tenant.name,
         tempPassword: result.tempPassword,
+        planName: result.planName,
       });
+      emailed = r.sent;
+      mailVia = r.via;
+      if (!r.sent) {
+        // Also try to notify existing tenant upgrades even without temp password
+        const { sendPlanChangeApproved } = await import("@/lib/mail");
+        if (result.upgraded) {
+          await sendPlanChangeApproved({
+            to: result.ownerEmail,
+            tenantName: result.tenant.name,
+            planName: result.planName,
+            endsAt: result.trialEndsAt ?? new Date(Date.now() + 30 * 86400_000),
+          });
+        }
+      }
+    } else if (result.upgraded) {
+      const { sendPlanChangeApproved } = await import("@/lib/mail");
+      const r = await sendPlanChangeApproved({
+        to: result.ownerEmail,
+        tenantName: result.tenant.name,
+        planName: result.planName,
+        endsAt: result.trialEndsAt ?? new Date(Date.now() + 30 * 86400_000),
+      });
+      emailed = r.sent;
+      mailVia = r.via;
     }
-    return ok({ ...result, emailed });
+    return ok({ ...result, emailed, mailVia });
   }
   throw new ApiError("إجراء غير صالح");
 });

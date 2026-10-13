@@ -1,3 +1,7 @@
+/**
+ * Canonical transaction helper — re-exported by `src/lib/services.ts` for
+ * backward-compat so both import paths work but there is a single implementation.
+ */
 import { db } from "@/db";
 import { sql } from "drizzle-orm";
 

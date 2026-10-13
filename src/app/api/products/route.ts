@@ -1,7 +1,7 @@
 import { db } from "@/db";
 import { products, inventoryMovements } from "@/db/schema";
 import { and, eq, ilike, desc, count } from "drizzle-orm";
-import { ok, handler, requireTenantUser, parsePagination, audit, ApiError } from "@/lib/api";
+import { ok, handler, requireTenantUser, parsePagination, escapeIlike, audit, ApiError } from "@/lib/api";
 import { getTenantPlan, withTenantTx } from "@/lib/services";
 import { toCents, toMilliQty, fromMilliQty } from "@/lib/money";
 
@@ -13,7 +13,7 @@ export const GET = handler(async (req: Request) => {
   const url = new URL(req.url);
   const activeOnly = url.searchParams.get("active") === "1";
   const conds = [eq(products.tenantId, user.tenantId)];
-  if (search) conds.push(ilike(products.name, `%${search}%`));
+  if (search) conds.push(ilike(products.name, `%${escapeIlike(search)}%`));
   if (activeOnly) conds.push(eq(products.isActive, true));
   const [rows, total] = await Promise.all([
     db.select().from(products).where(and(...conds)).orderBy(desc(products.createdAt)).limit(limit).offset(offset),

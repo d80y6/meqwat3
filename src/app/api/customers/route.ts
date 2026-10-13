@@ -1,7 +1,7 @@
 import { db } from "@/db";
 import { customers } from "@/db/schema";
 import { and, eq, ilike, desc, count, gt } from "drizzle-orm";
-import { ok, handler, requireTenantUser, parsePagination, audit, ApiError } from "@/lib/api";
+import { ok, handler, requireTenantUser, parsePagination, escapeIlike, audit, ApiError } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
 
@@ -11,7 +11,7 @@ export const GET = handler(async (req: Request) => {
   const url = new URL(req.url);
   const withDebt = url.searchParams.get("debt") === "1";
   const conds = [eq(customers.tenantId, user.tenantId), eq(customers.isActive, true)];
-  if (search) conds.push(ilike(customers.name, `%${search}%`));
+  if (search) conds.push(ilike(customers.name, `%${escapeIlike(search)}%`));
   if (withDebt) conds.push(gt(customers.balance, "0"));
   const where = and(...conds);
   const [rows, total] = await Promise.all([

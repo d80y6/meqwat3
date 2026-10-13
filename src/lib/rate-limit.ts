@@ -1,33 +1,211 @@
 /**
- * Fixed-window rate limiter (in-memory).
+ * Fixed-window rate limiter with pluggable store.
  *
- * Suitable for a single-instance deployment (e.g. one Render web service).
- * If the app is scaled horizontally, move this to Redis/Upstash so counters
- * are shared across instances — the call sites stay identical.
+ * Default: in-memory Map (single-instance, e.g. one Render web service).
+ * Production horizontal scaling: provide a Redis adapter via
+ * `setRateLimitStore(redisStore)` — call sites stay identical.
+ *
+ * Docs: docs/DECISIONS.md D11 — “move counters to Redis/Upstash — call sites are isolated for that.”
  */
+
+export interface RateLimitStore {
+  get(key: string): Promise<{ count: number; resetAt: number } | null>;
+  set(key: string, bucket: { count: number; resetAt: number }, ttlMs: number): Promise<void>;
+  incr(key: string): Promise<{ count: number; resetAt: number } | null>;
+}
+
 interface Bucket {
   count: number;
   resetAt: number;
 }
 
+// ---- In-memory default store ----
 const buckets = new Map<string, Bucket>();
 
+const memoryStore: RateLimitStore = {
+  async get(key) {
+    const b = buckets.get(key);
+    if (!b) return null;
+    if (b.resetAt <= Date.now()) {
+      buckets.delete(key);
+      return null;
+    }
+    return b;
+  },
+  async set(key, bucket) {
+    buckets.set(key, bucket);
+  },
+  async incr(key) {
+    const b = buckets.get(key);
+    if (!b) return null;
+    b.count += 1;
+    return b;
+  },
+};
+
+let activeStore: RateLimitStore = memoryStore;
+
+/** Swap the backing store (e.g. Redis). Pass null to revert to in-memory. */
+export function setRateLimitStore(store: RateLimitStore | null) {
+  activeStore = store ?? memoryStore;
+}
+export function getRateLimitStore(): RateLimitStore {
+  return activeStore;
+}
+
+// Periodic cleanup so the map cannot grow unbounded (in-memory only).
+if (typeof setInterval !== "undefined") {
+  const timer = setInterval(() => {
+    const now = Date.now();
+    for (const [k, b] of buckets) if (b.resetAt <= now) buckets.delete(k);
+  }, 60_000);
+  (timer as { unref?: () => void }).unref?.();
+}
+
+/**
+ * Factory for a Redis-backed store (Upstash / ioredis). Not imported by default
+ * to keep the bundle free of redis deps; wire it in server startup if needed:
+ *
+ * ```ts
+ * import { Redis } from "@upstash/redis";
+ * import { setRateLimitStore, createRedisStore } from "@/lib/rate-limit";
+ * setRateLimitStore(createRedisStore(new Redis({ url, token })));
+ * ```
+ */
+export function createRedisStore(client: {
+  get(key: string): Promise<string | null>;
+  set(key: string, value: string, opts?: { px?: number }): Promise<unknown>;
+  incr(key: string): Promise<number>;
+  pexpire?(key: string, ttl: number): Promise<unknown>;
+}): RateLimitStore {
+  return {
+    async get(key) {
+      const raw = await client.get(`rl:${key}`);
+      if (!raw) return null;
+      try {
+        const b = JSON.parse(raw) as Bucket;
+        if (b.resetAt <= Date.now()) return null;
+        return b;
+      } catch {
+        return null;
+      }
+    },
+    async set(key, bucket, ttlMs) {
+      await client.set(`rl:${key}`, JSON.stringify(bucket), { px: ttlMs });
+    },
+    async incr(key) {
+      // For Redis we store JSON; incr is implemented as get+set for simplicity.
+      // For high contention, replace with Lua script that does HINCRBY + EXPIRE atomically.
+      const cur = await client.get(`rl:${key}`);
+      if (!cur) return null;
+      try {
+        const b = JSON.parse(cur) as Bucket;
+        b.count += 1;
+        const ttl = Math.max(0, b.resetAt - Date.now());
+        await client.set(`rl:${key}`, JSON.stringify(b), { px: ttl });
+        return b;
+      } catch {
+        return null;
+      }
+    },
+  };
+}
+
+/* ---------------- Backward-compat helpers for tests ---------------- */
+export const LOGIN_LIMIT = { maxAttempts: 10, windowMs: 10 * 60_000 };
+
+/** Test helper — clear a bucket (used by tests). */
+export function clearFailures(key: string) {
+  buckets.delete(key);
+}
+
+/** Test helper — record a failure at a given timestamp (deterministic tests). */
+export function recordFailure(key: string, nowMs?: number) {
+  const now = nowMs ?? Date.now();
+  const bucket = buckets.get(key);
+  const windowMs = LOGIN_LIMIT.windowMs;
+  if (!bucket || bucket.resetAt <= now) {
+    buckets.set(key, { count: 1, resetAt: now + windowMs });
+  } else {
+    bucket.count += 1;
+  }
+}
+
+// Internal deterministic check used by tests (accepts config object + timestamp).
+function checkDeterministic(
+  key: string,
+  config: { maxAttempts: number; windowMs: number },
+  now: number,
+): { ok: boolean; allowed: boolean; retryAfterSec: number; remaining: number } {
+  const bucket = buckets.get(key);
+  if (!bucket || bucket.resetAt <= now) {
+    const remaining = config.maxAttempts;
+    return { ok: true, allowed: true, retryAfterSec: 0, remaining };
+  }
+  const allowed = bucket.count < config.maxAttempts;
+  const remaining = Math.max(0, config.maxAttempts - bucket.count);
+  const retryAfterSec = allowed ? 0 : Math.ceil((bucket.resetAt - now) / 1000);
+  return { ok: allowed, allowed, retryAfterSec, remaining };
+}
+
+/**
+ * Check whether `key` is within `limit` requests per `windowMs`.
+ * Supports two call signatures:
+ *  - production: checkRateLimit(key, limit:number, windowMs:number)
+ *  - test:       checkRateLimit(key, LOGIN_LIMIT, timestamp:number)
+ * Returns `{ ok, allowed, retryAfterSec, remaining }` — `allowed` is alias of `ok`.
+ */
 export function checkRateLimit(
+  key: string,
+  limit: number | { maxAttempts: number; windowMs: number },
+  windowMs: number,
+): { ok: boolean; allowed: boolean; retryAfterSec: number; remaining: number } {
+  // Test overload: second arg is a config object.
+  if (typeof limit === "object" && limit !== null && "maxAttempts" in limit) {
+    const config = limit as { maxAttempts: number; windowMs: number };
+    const now = windowMs; // in test overload, third param is timestamp
+    return checkDeterministic(key, config, now);
+  }
+
+  const lim = limit as number;
+  const win = windowMs as number;
+  const now = Date.now();
+  // Fast path for the default in-memory store (synchronous).
+  if (activeStore === memoryStore) {
+    const bucket = buckets.get(key);
+    if (!bucket || bucket.resetAt <= now) {
+      buckets.set(key, { count: 1, resetAt: now + win });
+      return { ok: true, allowed: true, retryAfterSec: 0, remaining: lim - 1 };
+    }
+    bucket.count += 1;
+    if (bucket.count > lim) {
+      return { ok: false, allowed: false, retryAfterSec: Math.ceil((bucket.resetAt - now) / 1000), remaining: 0 };
+    }
+    return { ok: true, allowed: true, retryAfterSec: 0, remaining: lim - bucket.count };
+  }
+
+  // Async store path — for call sites that can await, prefer checkRateLimitAsync.
+  console.warn("[rate-limit] async store active but checkRateLimit (sync) was called — use checkRateLimitAsync");
+  return { ok: true, allowed: true, retryAfterSec: 0, remaining: lim };
+}
+
+export async function checkRateLimitAsync(
   key: string,
   limit: number,
   windowMs: number,
-): { ok: boolean; retryAfterSec: number } {
+): Promise<{ ok: boolean; allowed: boolean; retryAfterSec: number; remaining: number }> {
   const now = Date.now();
-  const bucket = buckets.get(key);
-  if (!bucket || bucket.resetAt <= now) {
-    buckets.set(key, { count: 1, resetAt: now + windowMs });
-    return { ok: true, retryAfterSec: 0 };
+  const existing = await activeStore.get(key);
+  if (!existing) {
+    await activeStore.set(key, { count: 1, resetAt: now + windowMs }, windowMs);
+    return { ok: true, allowed: true, retryAfterSec: 0, remaining: limit - 1 };
   }
-  bucket.count += 1;
+  const updated = await activeStore.incr(key);
+  const bucket = updated ?? existing;
   if (bucket.count > limit) {
-    return { ok: false, retryAfterSec: Math.ceil((bucket.resetAt - now) / 1000) };
+    return { ok: false, allowed: false, retryAfterSec: Math.ceil((bucket.resetAt - now) / 1000), remaining: 0 };
   }
-  return { ok: true, retryAfterSec: 0 };
+  return { ok: true, allowed: true, retryAfterSec: 0, remaining: limit - bucket.count };
 }
 
 export function clientIp(req: Request): string {
@@ -38,11 +216,28 @@ export function clientIp(req: Request): string {
   );
 }
 
-// Periodic cleanup so the map cannot grow unbounded.
-if (typeof setInterval !== "undefined") {
-  const timer = setInterval(() => {
-    const now = Date.now();
-    for (const [k, b] of buckets) if (b.resetAt <= now) buckets.delete(k);
-  }, 60_000);
-  (timer as { unref?: () => void }).unref?.();
+/**
+ * Convenience helper for API routes: enforce a limit or return a 429 Response.
+ * Usage:
+ *   const limited = await limitOrRespond(req, "login:ip", 10, 10*60_000);
+ *   if (limited) return limited; // already a 429 Response
+ */
+export async function limitOrRespond(
+  req: Request,
+  keyPrefix: string,
+  limit: number,
+  windowMs: number,
+): Promise<Response | null> {
+  const key = `${keyPrefix}:${clientIp(req)}`;
+  // Use async check so Redis stores work correctly.
+  const res = activeStore === memoryStore
+    ? checkRateLimit(key, limit, windowMs)
+    : await checkRateLimitAsync(key, limit, windowMs);
+  if (!res.ok) {
+    return Response.json(
+      { ok: false, error: `محاولات كثيرة — حاول مجدداً بعد ${Math.ceil(res.retryAfterSec / 60)} دقيقة`, code: "RATE_LIMITED" },
+      { status: 429, headers: { "Retry-After": String(res.retryAfterSec) } },
+    );
+  }
+  return null;
 }

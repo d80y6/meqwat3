@@ -7,8 +7,8 @@ import { auditLogs } from "@/db/schema";
 export function ok(data: unknown, status = 200) {
   return NextResponse.json({ ok: true, data }, { status });
 }
-export function fail(message: string, status = 400, code?: string) {
-  return NextResponse.json({ ok: false, error: message, code }, { status });
+export function fail(message: string, status = 400, code?: string, extraHeaders?: Record<string, string>) {
+  return NextResponse.json({ ok: false, error: message, code }, { status, headers: extraHeaders });
 }
 
 export class ApiError extends Error {
@@ -51,7 +51,11 @@ export function handler<T extends unknown[]>(
     try {
       return await fn(...args);
     } catch (err) {
-      if (err instanceof ApiError) return fail(err.message, err.status, err.code);
+      if (err instanceof ApiError) {
+        const headers: Record<string, string> = {};
+        if (err.code === "RATE_LIMITED") headers["Retry-After"] = "60";
+        return fail(err.message, err.status, err.code, headers);
+      }
       console.error("[api] unhandled error:", err);
       return fail("حدث خطأ غير متوقع في الخادم", 500, "INTERNAL");
     }
@@ -64,6 +68,7 @@ export async function audit(
   entityType?: string,
   entityId?: string,
   metadata?: Record<string, unknown>,
+  ip?: string | null,
 ): Promise<void> {
   try {
     await db.insert(auditLogs).values({
@@ -73,10 +78,16 @@ export async function audit(
       entityType,
       entityId,
       metadata: metadata ?? null,
+      ip: ip ?? null,
     });
   } catch (e) {
     console.error("[audit] failed:", e);
   }
+}
+
+/** Escape `%` and `_` in user-supplied search terms for ILIKE. */
+export function escapeIlike(s: string): string {
+  return s.replace(/[%_\\]/g, "\\$&");
 }
 
 export function parsePagination(req: Request): { limit: number; offset: number; search: string } {
@@ -85,4 +96,21 @@ export function parsePagination(req: Request): { limit: number; offset: number; 
   const offset = Math.max(0, parseInt(url.searchParams.get("offset") ?? "0", 10) || 0);
   const search = (url.searchParams.get("search") ?? "").trim();
   return { limit, offset, search };
+}
+
+/** Parse an ISO date query param with validation. Returns null if absent. Throws ApiError if invalid. */
+export function parseDateParam(value: string | null, label: string): Date | null {
+  if (!value) return null;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) throw new ApiError(`صيغة التاريخ غير صالحة: ${label}`);
+  return d;
+}
+
+export function parseDateRange(req: Request): { from: Date; to: Date } {
+  const url = new URL(req.url);
+  const now = new Date();
+  const from = parseDateParam(url.searchParams.get("from"), "from") ?? new Date(now.getTime() - 30 * 86400_000);
+  const to = parseDateParam(url.searchParams.get("to"), "to") ?? now;
+  if (from > to) throw new ApiError("تاريخ البداية يجب أن يسبق تاريخ النهاية");
+  return { from, to };
 }

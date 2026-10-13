@@ -49,11 +49,14 @@ export const POST = handler(async (req: Request) => {
     let emailed = false;
     if (result.tempPassword) {
       const { sendOwnerCredentials } = await import("@/lib/email");
-      emailed = await sendOwnerCredentials({
+      const res = await sendOwnerCredentials({
         to: result.ownerEmail,
+        ownerName: result.tenant.ownerName ?? "المالك",
         tenantName: result.tenant.name,
         tempPassword: result.tempPassword,
+        planName: result.planName,
       });
+      emailed = res.sent;
     }
     return ok({ ...result, emailed });
   }

@@ -13,8 +13,9 @@ describe("credential email delivery", () => {
       ownerName: "مالك تجريبي",
       tenantName: "متجر تجريبي",
       tempPassword: "Meqwat@abcd1234",
+      planName: "أساسية",
     });
     expect(res.sent).toBe(false);
-    expect(res.via).toBe("log-only");
+    expect(res.reason).toBe("SMTP_NOT_CONFIGURED");
   });
 });

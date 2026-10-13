@@ -47,10 +47,12 @@ export const POST = handler(async (req: Request) => {
   });
   await audit(user, "admin.tenant.create", "tenant", result.tenant.id, { name: body?.name });
   const { sendOwnerCredentials } = await import("@/lib/email");
-  const emailed = await sendOwnerCredentials({
+  const res = await sendOwnerCredentials({
     to: result.owner.email,
+    ownerName: result.owner.name,
     tenantName: result.tenant.name,
     tempPassword: result.tempPassword,
+    planName: result.plan.name,
   });
-  return ok({ ...result, emailed }, 201);
+  return ok({ ...result, emailed: res.sent }, 201);
 });

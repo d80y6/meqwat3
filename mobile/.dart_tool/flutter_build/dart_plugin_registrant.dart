@@ -6,10 +6,10 @@
 // @dart = 3.3
 
 import 'dart:io'; // flutter_ignore: dart_io_import.
-import 'package:sqflite_android/sqflite_android.dart';
-import 'package:sqflite_darwin/sqflite_darwin.dart';
-import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:sqflite_darwin/sqflite_darwin.dart';
+import 'package:sqflite_android/sqflite_android.dart' as sqflite_android;
+import 'package:sqflite_darwin/sqflite_darwin.dart' as sqflite_darwin;
+import 'package:connectivity_plus/connectivity_plus.dart' as connectivity_plus;
+import 'package:sqflite_darwin/sqflite_darwin.dart' as sqflite_darwin;
 
 @pragma('vm:entry-point')
 class _PluginRegistrant {
@@ -18,7 +18,7 @@ class _PluginRegistrant {
   static void register() {
     if (Platform.isAndroid) {
       try {
-        SqfliteAndroid.registerWith();
+        sqflite_android.SqfliteAndroid.registerWith();
       } catch (err) {
         print(
           '`sqflite_android` threw an error: $err. '
@@ -28,7 +28,7 @@ class _PluginRegistrant {
 
     } else if (Platform.isIOS) {
       try {
-        SqfliteDarwin.registerWith();
+        sqflite_darwin.SqfliteDarwin.registerWith();
       } catch (err) {
         print(
           '`sqflite_darwin` threw an error: $err. '
@@ -38,7 +38,7 @@ class _PluginRegistrant {
 
     } else if (Platform.isLinux) {
       try {
-        ConnectivityPlusLinuxPlugin.registerWith();
+        connectivity_plus.ConnectivityPlusLinuxPlugin.registerWith();
       } catch (err) {
         print(
           '`connectivity_plus` threw an error: $err. '
@@ -48,7 +48,7 @@ class _PluginRegistrant {
 
     } else if (Platform.isMacOS) {
       try {
-        SqfliteDarwin.registerWith();
+        sqflite_darwin.SqfliteDarwin.registerWith();
       } catch (err) {
         print(
           '`sqflite_darwin` threw an error: $err. '

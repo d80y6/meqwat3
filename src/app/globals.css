@@ -43,19 +43,10 @@ input[type="number"], .ltr-nums {
 .slim-scroll::-webkit-scrollbar-thumb { background: #cbd5cb; border-radius: 999px; }
 .slim-scroll::-webkit-scrollbar-track { background: transparent; }
 
-/* Print: when a receipt is mounted, print ONLY the receipt (80mm). */
+/* Print: clean invoice/receipt printing */
 @media print {
   .no-print { display: none !important; }
   body { background: #fff; }
-  body:has(#receipt-print) * { visibility: hidden; }
-  body:has(#receipt-print) #receipt-print,
-  body:has(#receipt-print) #receipt-print * { visibility: visible; }
-  body:has(#receipt-print) #receipt-print {
-    position: fixed;
-    top: 0;
-    right: 0;
-    width: 80mm;
-  }
 }
 
 @keyframes slide-up {

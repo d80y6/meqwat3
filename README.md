@@ -31,18 +31,32 @@ Demo logins (seeded environment only):
 | Cashier | cashier@baraka.ye | Cashier@1234 |
 
 ## Production
+
+### Option A — Render (recommended)
+1. Push this repo to GitHub.
+2. Render Dashboard → **New → Blueprint** → select the repo (`render.yaml`
+   provisions Postgres + the web service; the build applies the schema).
+3. Set `ADMIN_PASSWORD` in the web service env, then once in the Render
+   Shell: `npx tsx src/db/bootstrap.ts` (plans + platform admin).
+4. GitHub Actions CI runs on every push: web tests/build/E2E, Flutter
+   analyze/test/APK build, Docker image build.
+
+### Option B — Docker
 ```bash
-# Option A — Docker
 POSTGRES_PASSWORD=... AUTH_SECRET=$(openssl rand -hex 32) docker compose up -d --build
-# then, once:
 docker compose exec app npx drizzle-kit push
 ADMIN_PASSWORD='...' docker compose exec app npx tsx src/db/bootstrap.ts
+```
 
-# Option B — bare metal
+### Option C — bare metal
+```bash
 npm run build && npm run start   # behind a TLS reverse proxy
 ```
 `src/db/bootstrap.ts` creates the plan catalog + first platform admin from
 env — **no demo data**. Never run `seed.ts` in production.
+
+Optional env: `SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASS/SMTP_FROM` —
+when set, new shop owners receive their one-time credentials by email.
 
 ## Operations
 - **Health**: `GET /api/health` (checks DB connectivity)

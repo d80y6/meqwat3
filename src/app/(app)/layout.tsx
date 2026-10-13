@@ -1,9 +1,9 @@
 import { redirect } from "next/navigation";
 import type { ReactNode } from "react";
 import { getCurrentUser } from "@/lib/auth";
+import { db } from "@/db";
 import { tenants } from "@/db/schema";
 import { eq } from "drizzle-orm";
-import { withTenantTx } from "@/lib/services";
 import { ROLE_PERMISSIONS } from "@/lib/permissions";
 import Shell from "@/components/Shell";
 
@@ -16,11 +16,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
   let tenantName: string | null = null;
   let isDemo = false;
   if (user.tenantId) {
-    const tenantId = user.tenantId;
-    const tenant = await withTenantTx({ tenantId }, async (tx) => {
-      const [t] = await tx.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
-      return t ?? null;
-    });
+    const [tenant] = await db.select().from(tenants).where(eq(tenants.id, user.tenantId)).limit(1);
     if (!tenant || tenant.status !== "active") redirect("/login?error=suspended");
     tenantName = tenant.name;
     isDemo = tenant.isDemo;

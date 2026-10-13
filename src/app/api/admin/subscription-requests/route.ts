@@ -44,20 +44,18 @@ export const POST = handler(async (req: Request) => {
   if (action === "approve") {
     const result = await approveRequest(requestId, user.id);
     await audit(user, "admin.request.approve", "subscription_request", requestId, { tenantId: result.tenant.id });
-    // Deliver owner credentials by email when SMTP is configured; the
-    // one-time password is also returned so the admin can hand it over.
-    let emailSent = false;
+    // Deliver one-time credentials by email when SMTP is configured;
+    // otherwise they are returned once for manual hand-over by the admin.
+    let emailed = false;
     if (result.tempPassword) {
       const { sendOwnerCredentials } = await import("@/lib/email");
-      const mail = await sendOwnerCredentials({
+      emailed = await sendOwnerCredentials({
         to: result.ownerEmail,
-        ownerName: request.ownerName,
         tenantName: result.tenant.name,
         tempPassword: result.tempPassword,
       });
-      emailSent = mail.sent;
     }
-    return ok({ ...result, emailSent });
+    return ok({ ...result, emailed });
   }
   throw new ApiError("إجراء غير صالح");
 });

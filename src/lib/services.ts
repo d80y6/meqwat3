@@ -14,7 +14,7 @@ export interface Ctx {
   role: string;
 }
 
-export type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 /**
  * Run work inside a transaction with PostgreSQL RLS session variables set.
@@ -51,23 +51,21 @@ function isUniqueViolation(err: unknown): boolean {
 
 /** Subscription guard: suspended tenants and expired subscriptions cannot write. */
 export async function assertTenantWritable(tenantId: string): Promise<void> {
-  await withTenantTx({ tenantId }, async (tx) => {
-    const [tenant] = await tx.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
-    if (!tenant) throw new ApiError("المتجر غير موجود", 404);
-    if (tenant.status !== "active") throw new ApiError("اشتراك المتجر موقوف، تواصل مع إدارة المنصة", 403, "TENANT_SUSPENDED");
-    const [sub] = await tx
-      .select({ status: subscriptions.status, endsAt: subscriptions.endsAt })
-      .from(subscriptions)
-      .where(eq(subscriptions.tenantId, tenantId))
-      .orderBy(sql`${subscriptions.createdAt} desc`)
-      .limit(1);
-    if (sub && (sub.status === "cancelled" || sub.status === "expired")) {
-      throw new ApiError("انتهى اشتراك المتجر، جدّد الاشتراك للمتابعة", 403, "SUBSCRIPTION_EXPIRED");
-    }
-    if (sub?.endsAt && sub.endsAt < new Date() && sub.status !== "trial") {
-      throw new ApiError("انتهى اشتراك المتجر، جدّد الاشتراك للمتابعة", 403, "SUBSCRIPTION_EXPIRED");
-    }
-  });
+  const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+  if (!tenant) throw new ApiError("المتجر غير موجود", 404);
+  if (tenant.status !== "active") throw new ApiError("اشتراك المتجر موقوف، تواصل مع إدارة المنصة", 403, "TENANT_SUSPENDED");
+  const [sub] = await db
+    .select({ status: subscriptions.status, endsAt: subscriptions.endsAt })
+    .from(subscriptions)
+    .where(eq(subscriptions.tenantId, tenantId))
+    .orderBy(sql`${subscriptions.createdAt} desc`)
+    .limit(1);
+  if (sub && (sub.status === "cancelled" || sub.status === "expired")) {
+    throw new ApiError("انتهى اشتراك المتجر، جدّد الاشتراك للمتابعة", 403, "SUBSCRIPTION_EXPIRED");
+  }
+  if (sub?.endsAt && sub.endsAt < new Date() && sub.status !== "trial") {
+    throw new ApiError("انتهى اشتراك المتجر، جدّد الاشتراك للمتابعة", 403, "SUBSCRIPTION_EXPIRED");
+  }
 }
 
 /* ---------------------------------- SALES --------------------------------- */
@@ -658,14 +656,12 @@ export async function closeShift(ctx: Ctx, shiftId: string, input: { countedCash
 
 /** Plan limits helper used when creating users/products. */
 export async function getTenantPlan(tenantId: string) {
-  return withTenantTx({ tenantId }, async (tx) => {
-    const [row] = await tx
-      .select({ plan: plans })
-      .from(subscriptions)
-      .innerJoin(plans, eq(subscriptions.planId, plans.id))
-      .where(eq(subscriptions.tenantId, tenantId))
-      .orderBy(sql`${subscriptions.createdAt} desc`)
-      .limit(1);
-    return row?.plan ?? null;
-  });
+  const [row] = await db
+    .select({ plan: plans })
+    .from(subscriptions)
+    .innerJoin(plans, eq(subscriptions.planId, plans.id))
+    .where(eq(subscriptions.tenantId, tenantId))
+    .orderBy(sql`${subscriptions.createdAt} desc`)
+    .limit(1);
+  return row?.plan ?? null;
 }

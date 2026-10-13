@@ -1,0 +1,37 @@
+# Meqwat SaaS — Render Blueprint
+# Push this repo to GitHub → Render Dashboard → New → Blueprint → select repo.
+# This provisions: 1 PostgreSQL database + 1 Node web service.
+#
+# After the first deploy completes, open the web service Shell and run ONCE:
+#   npx tsx src/db/bootstrap.ts        (creates plans + platform admin)
+# with ADMIN_EMAIL / ADMIN_PASSWORD set (see envVars below).
+# Do NOT run src/db/seed.ts in production — it creates demo tenants.
+
+databases:
+  - name: meqwat-db
+    databaseName: meqwat
+    user: meqwat
+    plan: free
+
+services:
+  - type: web
+    name: meqwat-web
+    env: node
+    plan: free
+    buildCommand: npm ci && npx drizzle-kit push && npm run build
+    startCommand: npm run start
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: meqwat-db
+          property: connectionString
+      - key: NODE_ENV
+        value: production
+      - key: AUTH_SECRET
+        generateValue: true
+      # Set these two in the Render dashboard before first bootstrap:
+      - key: ADMIN_EMAIL
+        value: admin@meqwat.app
+      - key: ADMIN_PASSWORD
+        sync: false

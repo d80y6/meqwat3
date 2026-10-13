@@ -5,7 +5,6 @@ import { ChevronDown, ChevronLeft, RotateCcw, Printer } from "lucide-react";
 import { apiGet, apiPost } from "@/lib/client";
 import { fmtMoney, fmtQty } from "@/lib/money";
 import { Btn, Field, Input, Select, Modal, PageHeader, TableShell, Badge, EmptyState, Loading, useToast } from "@/components/ui";
-import Receipt from "@/components/Receipt";
 
 interface SaleItemRow { id: string; productName: string; unit: string; qty: string; returnedQty: string; unitPrice: string; total: string }
 interface Sale {
@@ -32,8 +31,6 @@ export default function SalesPage() {
   const [restock, setRestock] = useState<Record<string, boolean>>({});
   const [refundMethod, setRefundMethod] = useState<"cash" | "debt">("cash");
   const [savingReturn, setSavingReturn] = useState(false);
-  const [receiptFor, setReceiptFor] = useState<Sale | null>(null);
-  const [tenantName, setTenantName] = useState("متجرنا");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -44,9 +41,6 @@ export default function SalesPage() {
     finally { setLoading(false); }
   }, [toast]);
   useEffect(() => { void load(); }, [load]);
-  useEffect(() => {
-    apiGet<{ tenant: { name: string } | null }>("/api/auth/me").then((d) => { if (d.tenant?.name) setTenantName(d.tenant.name); }).catch(() => {});
-  }, []);
 
   function openReturn(sale: Sale) {
     setReturnFor(sale);
@@ -116,8 +110,8 @@ export default function SalesPage() {
                       ))}
                     </ul>
                     {Number(s.returnedAmount) > 0 && <p className="mt-2 text-xs text-red-600">إجمالي المرتجعات: {fmtMoney(s.returnedAmount)}</p>}
-                    <button onClick={() => setReceiptFor(s)} className="mt-2 inline-flex items-center gap-1 rounded-lg bg-white px-2.5 py-1.5 text-xs font-bold text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50 no-print">
-                      <Printer className="h-3.5 w-3.5" /> طباعة إيصال حراري
+                    <button onClick={() => window.print()} className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-slate-500 hover:text-slate-700 no-print">
+                      <Printer className="h-3.5 w-3.5" /> طباعة الفاتورة
                     </button>
                   </td>
                 </tr>
@@ -161,34 +155,6 @@ export default function SalesPage() {
               <Btn onClick={submitReturn} loading={savingReturn} className="flex-1">تنفيذ الإرجاع</Btn>
               <Btn variant="secondary" onClick={() => setReturnFor(null)}>إلغاء</Btn>
             </div>
-          </div>
-        )}
-      </Modal>
-
-      <Modal open={!!receiptFor} onClose={() => setReceiptFor(null)} title={`إيصال فاتورة #${receiptFor?.invoiceNo ?? ""}`}>
-        {receiptFor && (
-          <div className="space-y-4">
-            <div className="overflow-x-auto rounded-xl bg-slate-100 p-3">
-              <Receipt
-                tenantName={tenantName}
-                sale={{
-                  invoiceNo: receiptFor.invoiceNo,
-                  saleDate: receiptFor.saleDate,
-                  customerName: receiptFor.customerName,
-                  items: receiptFor.items,
-                  totalAmount: receiptFor.totalAmount,
-                  discount: receiptFor.discount,
-                  paidAmount: receiptFor.paidAmount,
-                  creditAmount: receiptFor.creditAmount,
-                  returnedAmount: receiptFor.returnedAmount,
-                  status: receiptFor.status,
-                }}
-              />
-            </div>
-            <Btn onClick={() => window.print()} className="w-full no-print">
-              <Printer className="h-4 w-4" /> طباعة الإيصال (80مم)
-            </Btn>
-            <p className="text-center text-xs text-slate-400 no-print">سيُطبع الإيصال فقط بصيغة الطابعات الحرارية.</p>
           </div>
         )}
       </Modal>

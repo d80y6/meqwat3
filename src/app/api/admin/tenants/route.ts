@@ -1,28 +1,26 @@
-import { tenants, subscriptions, plans } from "@/db/schema";
-import { eq, desc, sql } from "drizzle-orm";
+import { db } from "@/db";
+import { tenants, subscriptions, plans, users } from "@/db/schema";
+import { eq, desc, count, sql } from "drizzle-orm";
 import { ok, handler, requireUser, requireRole, audit } from "@/lib/api";
-import { withTenantTx } from "@/lib/services";
 
 export const dynamic = "force-dynamic";
 
 export const GET = handler(async () => {
   const user = await requireUser();
   requireRole(user, "admin:tenants");
-  const rows = await withTenantTx({ tenantId: null }, async (tx) =>
-    tx
-      .select({
-        tenant: tenants,
-        planName: plans.name,
-        subStatus: subscriptions.status,
-        endsAt: subscriptions.endsAt,
-        usersCount: sql<number>`(select count(*)::int from users u where u.tenant_id = ${tenants.id})`,
-        salesCount: sql<number>`(select count(*)::int from sales s where s.tenant_id = ${tenants.id})`,
-      })
-      .from(tenants)
-      .leftJoin(subscriptions, eq(subscriptions.tenantId, tenants.id))
-      .leftJoin(plans, eq(subscriptions.planId, plans.id))
-      .orderBy(desc(tenants.createdAt)),
-  );
+  const rows = await db
+    .select({
+      tenant: tenants,
+      planName: plans.name,
+      subStatus: subscriptions.status,
+      endsAt: subscriptions.endsAt,
+      usersCount: sql<number>`(select count(*)::int from users u where u.tenant_id = ${tenants.id})`,
+      salesCount: sql<number>`(select count(*)::int from sales s where s.tenant_id = ${tenants.id})`,
+    })
+    .from(tenants)
+    .leftJoin(subscriptions, eq(subscriptions.tenantId, tenants.id))
+    .leftJoin(plans, eq(subscriptions.planId, plans.id))
+    .orderBy(desc(tenants.createdAt));
   // Latest subscription per tenant only.
   const seen = new Set<string>();
   const items = rows.filter((r) => {
@@ -49,11 +47,10 @@ export const POST = handler(async (req: Request) => {
   });
   await audit(user, "admin.tenant.create", "tenant", result.tenant.id, { name: body?.name });
   const { sendOwnerCredentials } = await import("@/lib/email");
-  const mail = await sendOwnerCredentials({
+  const emailed = await sendOwnerCredentials({
     to: result.owner.email,
-    ownerName: String(body?.ownerName ?? ""),
     tenantName: result.tenant.name,
     tempPassword: result.tempPassword,
   });
-  return ok({ ...result, emailSent: mail.sent }, 201);
+  return ok({ ...result, emailed }, 201);
 });

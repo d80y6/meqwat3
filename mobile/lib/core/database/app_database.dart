@@ -76,11 +76,13 @@ class AppDatabase {
 
   Future<void> markOutbox(String mutationId, String status, String? error) async {
     final rows = await _db.rawQuery(
-        'SELECT attempts FROM outbox WHERE client_mutation_id = ?', [mutationId]);
-    final attempts = (Sqflite.firstIntValue(rows) ?? 0) + 1;
+      'SELECT attempts FROM outbox WHERE client_mutation_id = ?',
+      [mutationId],
+    );
+    final attempts = rows.isEmpty ? 0 : (rows.first['attempts'] as int? ?? 0);
     await _db.update(
       'outbox',
-      {'status': status, 'error': error, 'attempts': attempts},
+      {'status': status, 'error': error, 'attempts': attempts + 1},
       where: 'client_mutation_id = ?',
       whereArgs: [mutationId],
     );

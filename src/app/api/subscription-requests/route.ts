@@ -12,6 +12,9 @@ export const dynamic = "force-dynamic";
  * existing subscription instead of provisioning a duplicate tenant.
  */
 export async function POST(req: Request) {
+  const { checkRateLimit, clientIp } = await import("@/lib/rate-limit");
+  const limit = checkRateLimit(`subreq:${clientIp(req)}`, 5, 60 * 60_000);
+  if (!limit.ok) return fail("طلبات كثيرة من عنوانك — حاول لاحقاً", 429, "RATE_LIMITED");
   const body = await req.json().catch(() => null);
   const businessName = String(body?.businessName ?? "").trim();
   const ownerName = String(body?.ownerName ?? "").trim();

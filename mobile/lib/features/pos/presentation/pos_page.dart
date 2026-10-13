@@ -102,7 +102,10 @@ class _PosPageState extends State<PosPage> {
 
   Widget _cartBar(BuildContext context, PosState state) {
     final total = _cart.entries.fold<num>(0, (sum, e) {
-      final p = state.products.firstWhere((x) => x['id'] == e.key, orElse: () => const {});
+      final p = state.products.firstWhere(
+        (x) => x['id'] == e.key,
+        orElse: () => <String, Object?>{},
+      );
       return sum + e.value * (num.tryParse(p['sale_price']?.toString() ?? '0') ?? 0);
     });
     return SafeArea(

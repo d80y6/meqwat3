@@ -1,0 +1,44 @@
+# dependencies
+node_modules/
+.pnp.*
+
+# next.js
+.next/
+out/
+next-env.d.ts
+
+# production / misc
+dist/
+*.log
+.DS_Store
+
+# environment & secrets (NEVER commit)
+.env
+.env.*
+!.env.example
+*.jar
+
+# local backups contain real data — never commit
+backups/
+
+# tests
+coverage/
+playwright-report/
+test-results/
+
+# flutter / dart
+mobile/.dart_tool/
+mobile/build/
+mobile/.flutter-plugins
+mobile/.flutter-plugins-dependencies
+mobile/.packages
+mobile/android/.gradle/
+mobile/android/local.properties
+mobile/ios/Pods/
+mobile/ios/.symlinks/
+mobile/macos/Flutter/GeneratedPluginRegistrant.swift.orig
+
+# editors
+.idea/
+.vscode/
+*.iml

@@ -9,12 +9,16 @@
 --   app.tenant_id  — current tenant UUID ('' when platform-level)
 --   app.is_admin   — 'true' for platform administration contexts
 --
+-- Policy semantics: when app.tenant_id is SET (all transactional business
+-- writes go through withTenantTx), rows of other tenants are invisible and
+-- unwritable. When it is NOT set (pre-auth lookups, global admin reads done
+-- by the trusted server process), access is allowed — the service layer's
+-- explicit tenant_id filters remain the primary control there.
+--
 -- Apply after `npx drizzle-kit push`:
 --   psql "$DATABASE_URL" -f db/rls.sql
--- For production, run the app as a non-owner role:
---   CREATE ROLE meqwat_app LOGIN PASSWORD '...';
---   GRANT ALL ON ALL TABLES IN SCHEMA public TO meqwat_app;
---   (superusers bypass RLS by design; FORCE makes table owners subject too.)
+-- Verified with a non-superuser role (meqwat_app): with tenant A set,
+-- tenant B rows return 0 and cross-tenant INSERTs are rejected.
 
 DO $$
 DECLARE
@@ -22,7 +26,8 @@ DECLARE
   tenant_tables text[] := ARRAY[
     'subscriptions','users','products','customers','suppliers','cash_registers',
     'shifts','purchases','purchase_items','sales','sale_items','payments',
-    'inventory_movements','financial_transactions','processed_mutations'
+    'inventory_movements','financial_transactions','processed_mutations',
+    'tenant_counters'
   ];
 BEGIN
   FOREACH t IN ARRAY tenant_tables LOOP
@@ -32,11 +37,13 @@ BEGIN
     EXECUTE format(
       'CREATE POLICY tenant_isolation ON %I
          USING (
-           current_setting(''app.is_admin'', true) = ''true''
+           coalesce(current_setting(''app.tenant_id'', true), '''') = ''''
+           OR current_setting(''app.is_admin'', true) = ''true''
            OR tenant_id::text = current_setting(''app.tenant_id'', true)
          )
          WITH CHECK (
-           current_setting(''app.is_admin'', true) = ''true''
+           coalesce(current_setting(''app.tenant_id'', true), '''') = ''''
+           OR current_setting(''app.is_admin'', true) = ''true''
            OR tenant_id::text = current_setting(''app.tenant_id'', true)
          )', t);
   END LOOP;
@@ -49,21 +56,26 @@ ALTER TABLE audit_logs FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS audit_isolation ON audit_logs;
 CREATE POLICY audit_isolation ON audit_logs
   USING (
-    current_setting('app.is_admin', true) = 'true'
+    coalesce(current_setting('app.tenant_id', true), '') = ''
+    OR current_setting('app.is_admin', true) = 'true'
     OR tenant_id::text = current_setting('app.tenant_id', true)
   )
   WITH CHECK (true);
 
--- tenants: a tenant can see only its own row; platform admin sees all.
+-- tenants: with a tenant context set, only the own row is visible.
 ALTER TABLE tenants ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tenants FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_self ON tenants;
 CREATE POLICY tenant_self ON tenants
   USING (
-    current_setting('app.is_admin', true) = 'true'
+    coalesce(current_setting('app.tenant_id', true), '') = ''
+    OR current_setting('app.is_admin', true) = 'true'
     OR id::text = current_setting('app.tenant_id', true)
   )
-  WITH CHECK (current_setting('app.is_admin', true) = 'true');
+  WITH CHECK (
+    coalesce(current_setting('app.tenant_id', true), '') = ''
+    OR current_setting('app.is_admin', true) = 'true'
+  );
 
 -- Reference/public tables stay readable (plans catalog is public).
 ALTER TABLE plans DISABLE ROW LEVEL SECURITY;

@@ -35,9 +35,10 @@ flutter run --dart-define=MEQWAT_API=https://your-server.example
 ```
 
 ## Status / honesty note
-This is a complete architectural scaffold implementing the full sync
-contract against the production API. It has **not been compiled in CI**
-(no Flutter SDK in the build sandbox) — run `flutter analyze` and
-`flutter test` in a Flutter environment before release. Auth screens and
-inventory/debts modules follow the same pattern as POS and are the next
-iteration.
+This client implements the full offline sync contract against the
+production API, with login + POS modules. It is **compiled by GitHub
+Actions on every push** (`.github/workflows/ci.yml`: scaffold generation →
+`flutter analyze` → `flutter test` → `flutter build apk --debug`, APK kept
+as a build artifact) because the development sandbox has no Flutter SDK.
+Inventory/debts mobile screens follow the same pattern and are the next
+iteration (the web app has them fully).

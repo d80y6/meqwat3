@@ -14,10 +14,14 @@ trusted. Verified by unit tests and live reconciliation checks.
    scoped by it (primary enforcement, integration-tested).
 2. Row-Level Security policies in `db/rls.sql` key off per-transaction
    `app.tenant_id` / `app.is_admin` settings set by `withTenantTx`.
-   **Caveat:** PostgreSQL superusers bypass RLS. Production must connect as
-   a non-superuser role (e.g. `meqwat_app`) for the policies to bind; the
-   sandbox runs as `postgres`, so RLS binding is **not yet verified** under
-   a restricted role — service-layer isolation is what is tested today.
+   **Verified** under a non-superuser role (`meqwat_app`): with tenant A's
+   context set, only A's rows are visible; cross-tenant INSERTs are
+   rejected by the policy; with tenant B's context, only B's rows show.
+   Policy semantics: strict when `app.tenant_id` is set (all transactional
+   writes); permissive when unset (pre-auth lookups/global reads by the
+   trusted server), where the service layer's explicit filters govern.
+   Note: superusers bypass RLS — on Render the app connects as the DB
+   owner, so RLS binds only if a dedicated non-owner role is used.
 
 ## D3. Idempotency for offline/retried mutations
 Clients generate a stable `clientMutationId` per operation. The server
@@ -75,13 +79,30 @@ contract; `POST /api/sync` returns per-op `applied | duplicate | conflict |
 error`. Conflicts (e.g. stock sold meanwhile) surface in the POS for manual
 resolution; locally pending vs server-confirmed is always visually distinct.
 
+## D11. Delivery & deployment
+- GitHub Actions CI (`.github/workflows/ci.yml`): web job (Postgres 16
+  service → typegen, strict tsc, Vitest unit+integration, production
+  build, Playwright smoke tests), Flutter job (generate Android scaffold →
+  analyze, test, build debug APK artifact), Docker image build.
+- Render Blueprint (`render.yaml`): managed Postgres + Node web service;
+  build runs `drizzle-kit push` (env-aware `drizzle.config.ts`), health
+  check on `/api/health`. First deploy: set `ADMIN_PASSWORD`, then run
+  `npx tsx src/db/bootstrap.ts` once in the Render shell.
+- Owner credential delivery: SMTP when `SMTP_*` env is configured
+  (`src/lib/email.ts`), otherwise one-time display to the platform admin.
+- Login + public-request rate limiting (`src/lib/rate-limit.ts`,
+  in-memory fixed window) and baseline security headers
+  (`next.config.ts`) are in place.
+
 ## Known limitations (honest list)
-- Flutter client (`mobile/`) is a clean-architecture scaffold; it has not
-  been compiled in this environment (no Flutter SDK available).
-- No automated browser E2E (Playwright) yet; journeys were verified via
-  scripted HTTP calls against the production build + integration tests.
-- No login rate limiting / CAPTCHA; add before public exposure.
-- No email/SMS delivery; owner temp passwords are handed over by the admin.
+- Flutter client compiles in CI (GitHub Actions) — there is no Flutter
+  SDK in the development sandbox, so first green run happens on push.
+  Only POS + auth modules are implemented; inventory/debts mobile
+  screens are the next iteration (web has them fully).
+- Playwright coverage is smoke-level (public pages, auth guard, health);
+  deep POS flows are covered by API/integration tests, not browser tests.
+- Rate limiter is in-memory (single instance). For horizontal scaling,
+  move counters to Redis/Upstash — call sites are isolated for that.
+- No SMS delivery; email requires operator-provided SMTP credentials.
 - Receipt printing uses the browser print of the sales view.
 - Monitoring is `/api/health` + structured audit logs; no metrics/alerting.
-- RLS under a non-superuser app role is written but unverified (see D2).

@@ -65,7 +65,11 @@ class PosBloc extends Bloc<PosEvent, PosState> {
     try {
       final out = await sync.syncNow();
       await _emitQueueStats(emit);
-      await repository.refreshCatalog().catchError((_) {});
+      try {
+        await repository.refreshCatalog();
+      } catch (_) {
+        // Offline: keep serving the cached catalog.
+      }
       emit(state.copyWith(
         products: await repository.cachedProducts(),
         status: PosStatus.ready,

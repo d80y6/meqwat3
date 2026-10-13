@@ -108,19 +108,12 @@ export async function rotateRefreshSession(): Promise<AuthUser | null> {
     .where(and(eq(sessions.refreshTokenHash, hash), isNull(sessions.revokedAt), gt(sessions.expiresAt, new Date())))
     .limit(1);
   if (!session) return null;
-  // users/tenants are RLS-protected: identity lookup runs in platform context.
-  const { withTenantTx } = await import("./services");
-  const identity = await withTenantTx({ tenantId: null }, async (tx) => {
-    const [user] = await tx.select().from(users).where(eq(users.id, session.userId)).limit(1);
-    if (!user || !user.isActive) return null;
-    if (user.tenantId) {
-      const [tenant] = await tx.select().from(tenants).where(eq(tenants.id, user.tenantId)).limit(1);
-      if (!tenant || tenant.status !== "active") return null;
-    }
-    return user;
-  });
-  const user = identity;
-  if (!user) return null;
+  const [user] = await db.select().from(users).where(eq(users.id, session.userId)).limit(1);
+  if (!user || !user.isActive) return null;
+  if (user.tenantId) {
+    const [tenant] = await db.select().from(tenants).where(eq(tenants.id, user.tenantId)).limit(1);
+    if (!tenant || tenant.status !== "active") return null;
+  }
   // Revoke old session (rotation) and issue a new one.
   await db.update(sessions).set({ revokedAt: new Date() }).where(eq(sessions.id, session.id));
   const authUser: AuthUser = {

@@ -1,7 +1,5 @@
 import "dotenv/config";
-import { drizzle } from "drizzle-orm/node-postgres";
-import { Pool } from "pg";
-import { sql } from "drizzle-orm";
+import { db } from "./index";
 import {
   plans, tenants, users, products, customers, suppliers, cashRegisters, subscriptions,
 } from "./schema";
@@ -14,22 +12,17 @@ import { createSale, createPurchase, recordPayment, openShift, recordStockAction
  * and must never be confused with production data. Idempotent: safe to re-run.
  */
 
-const seedPool = new Pool({ connectionString: process.env.DATABASE_URL, max: 1 });
-const sdb = drizzle(seedPool);
-
 async function main() {
-  await sdb.execute(sql`select set_config('app.is_admin', 'true', false)`);
-  const [existingAdmin] = await sdb.select().from(users).where(eq(users.email, "admin@meqwat.app")).limit(1);
+  const [existingAdmin] = await db.select().from(users).where(eq(users.email, "admin@meqwat.app")).limit(1);
   if (existingAdmin) {
     console.log("✓ Seed already applied — skipping.");
-    await seedPool.end();
     return;
   }
 
   console.log("Seeding Meqwat demo environment…");
 
   // Plans
-  const [basic, pro, ent] = await sdb
+  const [basic, pro, ent] = await db
     .insert(plans)
     .values([
       { name: "الأساسية", nameEn: "Basic", priceMonthly: "15000", maxUsers: 3, maxProducts: 50, maxBranches: 1, features: ["نقطة بيع", "مخزون وهالك", "ديون العملاء"] },
@@ -40,29 +33,29 @@ async function main() {
   void basic; void ent;
 
   // Platform admin (no tenant)
-  await sdb.insert(users).values({
+  await db.insert(users).values({
     tenantId: null, name: "مدير المنصة", email: "admin@meqwat.app",
     passwordHash: await hashPassword("Admin@1234"), role: "platform_admin",
   });
 
   // ---- Demo tenant 1: متجر البركة (صنعاء) ----
-  const [baraka] = await sdb.insert(tenants).values({
+  const [baraka] = await db.insert(tenants).values({
     name: "متجر البركة للقات", slug: "baraka-demo", ownerName: "محمد الحداد",
     phone: "777123456", city: "صنعاء", isDemo: true,
   }).returning();
-  await sdb.insert(subscriptions).values({
+  await db.insert(subscriptions).values({
     tenantId: baraka.id, planId: pro.id, status: "active",
     endsAt: new Date(Date.now() + 90 * 86400_000),
   });
 
-  const [owner] = await sdb.insert(users).values([
+  const [owner] = await db.insert(users).values([
     { tenantId: baraka.id, name: "محمد الحداد", email: "owner@baraka.ye", phone: "777123456", passwordHash: await hashPassword("Owner@1234"), role: "tenant_owner" },
     { tenantId: baraka.id, name: "أحمد الشيباني", email: "manager@baraka.ye", phone: "733987654", passwordHash: await hashPassword("Manager@1234"), role: "manager" },
     { tenantId: baraka.id, name: "خالد العمري", email: "cashier@baraka.ye", phone: "711555222", passwordHash: await hashPassword("Cashier@1234"), role: "cashier" },
   ]).returning();
   const ctx = { tenantId: baraka.id, userId: owner.id, role: "tenant_owner" };
 
-  const [register] = await sdb.insert(cashRegisters).values([
+  const [register] = await db.insert(cashRegisters).values([
     { tenantId: baraka.id, name: "الصندوق الرئيسي" },
     { tenantId: baraka.id, name: "صندوق الفرع — حدة" },
   ]).returning();
@@ -77,16 +70,16 @@ async function main() {
   ];
   const prods: Record<string, typeof products.$inferSelect> = {};
   for (const p of productData) {
-    const [created] = await sdb.insert(products).values({ tenantId: baraka.id, ...p, stockQty: "0" }).returning();
+    const [created] = await db.insert(products).values({ tenantId: baraka.id, ...p, stockQty: "0" }).returning();
     prods[p.sku] = created;
   }
 
-  const [sup1, sup2] = await sdb.insert(suppliers).values([
+  const [sup1, sup2] = await db.insert(suppliers).values([
     { tenantId: baraka.id, name: "مزارع أبو ناصر — همدان", phone: "777444555", address: "همدان، صنعاء" },
     { tenantId: baraka.id, name: "وكالة الشامي للقات", phone: "733666777", address: "سوق الملح، صنعاء القديمة" },
   ]).returning();
 
-  const custRows = await sdb.insert(customers).values([
+  const custRows = await db.insert(customers).values([
     { tenantId: baraka.id, name: "عبدالله المطري", phone: "777888999", creditLimit: "200000" },
     { tenantId: baraka.id, name: "سالم باجابر", phone: "733222111", creditLimit: "100000" },
     { tenantId: baraka.id, name: "محل الياسمين للقات", phone: "711333444", creditLimit: "500000" },
@@ -129,24 +122,24 @@ async function main() {
   await recordStockAction(ctx, { productId: prods["SHM-04"].id, type: "spoilage", qty: "4", notes: "هالك قات الأمس — ذابل" });
 
   // ---- Demo tenant 2: قات النور (عدن) — proves tenant isolation ----
-  const [noor] = await sdb.insert(tenants).values({
+  const [noor] = await db.insert(tenants).values({
     name: "قات النور", slug: "noor-demo", ownerName: "فاطمة باعشن",
     phone: "734555666", city: "عدن", isDemo: true,
   }).returning();
-  await sdb.insert(subscriptions).values({ tenantId: noor.id, planId: basic.id, status: "trial", endsAt: new Date(Date.now() + 14 * 86400_000) });
-  const [noorOwner] = await sdb.insert(users).values({
+  await db.insert(subscriptions).values({ tenantId: noor.id, planId: basic.id, status: "trial", endsAt: new Date(Date.now() + 14 * 86400_000) });
+  const [noorOwner] = await db.insert(users).values({
     tenantId: noor.id, name: "فاطمة باعشن", email: "owner@noor.ye",
     passwordHash: await hashPassword("Owner@1234"), role: "tenant_owner",
   }).returning();
-  await sdb.insert(cashRegisters).values({ tenantId: noor.id, name: "الصندوق الرئيسي" });
-  const [noorProd] = await sdb.insert(products).values({
+  await db.insert(cashRegisters).values({ tenantId: noor.id, name: "الصندوق الرئيسي" });
+  const [noorProd] = await db.insert(products).values({
     tenantId: noor.id, name: "قات يافعي", sku: "YFC-01", costPrice: "6000", salePrice: "9500", stockQty: "30",
   }).returning();
   void noorOwner; void noorProd;
 
   // A pending subscription request for the admin queue
   const { subscriptionRequests } = await import("./schema");
-  await sdb.insert(subscriptionRequests).values({
+  await db.insert(subscriptionRequests).values({
     businessName: "متجر السلام للقات", ownerName: "عمر باحكيم", email: "salam@shop.ye",
     phone: "777999888", city: "تعز", planId: basic.id, notes: "محل في سوق الجملة، نحتاج صندوقين",
   });
@@ -156,7 +149,7 @@ async function main() {
 }
 
 main()
-  .then(async () => { await seedPool.end(); process.exit(0); })
+  .then(() => process.exit(0))
   .catch((err) => {
     console.error("Seed failed:", err);
     process.exit(1);

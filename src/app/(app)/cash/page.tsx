@@ -1,10 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Plus, Lock, Landmark, TriangleAlert } from "lucide-react";
-import { apiGet, apiPost } from "@/lib/client";
+import { Plus, Lock, Landmark, TriangleAlert, Receipt, Wallet } from "lucide-react";
+import { apiGet, apiPost, newMutationId } from "@/lib/client";
 import { fmtMoney } from "@/lib/money";
-import { Btn, Field, Input, Modal, PageHeader, TableShell, Badge, EmptyState, Loading, useToast } from "@/components/ui";
+import { Btn, Field, Input, Select, Textarea, Modal, PageHeader, TableShell, Badge, EmptyState, Loading, useToast } from "@/components/ui";
 
 interface Register { id: string; name: string }
 interface Shift {
@@ -12,13 +12,21 @@ interface Shift {
   countedCash: string | null; expectedCash: string | null; expectedNow: string | null;
   difference: string | null; openedAt: string; closedAt: string | null;
 }
+interface Expense { id: string; amount: string; description: string; category: string | null; shiftId: string | null; createdAt: string }
 
 export default function CashPage() {
   const toast = useToast();
   const [registers, setRegisters] = useState<Register[]>([]);
   const [shifts, setShifts] = useState<Shift[]>([]);
+  const [expenses, setExpenses] = useState<Expense[]>([]);
   const [loading, setLoading] = useState(true);
   const [openModal, setOpenModal] = useState(false);
+  const [expenseModal, setExpenseModal] = useState(false);
+  const [expShift, setExpShift] = useState<string>("");
+  const [expAmount, setExpAmount] = useState("");
+  const [expDesc, setExpDesc] = useState("");
+  const [expCategory, setExpCategory] = useState("عام");
+  const [expSaving, setExpSaving] = useState(false);
   const [closeFor, setCloseFor] = useState<Shift | null>(null);
   const [registerId, setRegisterId] = useState("");
   const [openingCash, setOpeningCash] = useState("0");
@@ -29,12 +37,14 @@ export default function CashPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [r, s] = await Promise.all([
+      const [r, s, ex] = await Promise.all([
         apiGet<{ registers: Register[] }>("/api/registers"),
         apiGet<{ items: Shift[] }>("/api/shifts?limit=30"),
+        apiGet<{ items: Expense[] }>("/api/expenses?limit=30").catch(() => ({ items: [] as Expense[] })),
       ]);
       setRegisters(r.registers);
       setShifts(s.items);
+      setExpenses(ex.items);
       if (r.registers.length) setRegisterId((cur) => cur || r.registers[0].id);
     } catch (e) { toast.push("error", e instanceof Error ? e.message : "تعذر التحميل"); }
     finally { setLoading(false); }
@@ -80,14 +90,28 @@ export default function CashPage() {
     } catch (e) { toast.push("error", e instanceof Error ? e.message : "تعذر إنشاء الصندوق"); }
   }
 
+  async function addExpense(e: React.FormEvent) {
+    e.preventDefault();
+    if (!expAmount || !expDesc.trim()) return toast.push("error", "أدخل المبلغ والوصف");
+    if (Number(expAmount) <= 0) return toast.push("error", "المبلغ يجب أن يكون أكبر من صفر");
+    setExpSaving(true);
+    try {
+      await apiPost("/api/expenses", { amount: expAmount, description: expDesc, category: expCategory, shiftId: expShift || null, clientMutationId: newMutationId() });
+      toast.push("success", "تم تسجيل المصروف");
+      setExpenseModal(false); setExpAmount(""); setExpDesc("");
+      void load();
+    } catch (err) { toast.push("error", err instanceof Error ? err.message : "تعذر تسجيل المصروف"); }
+    finally { setExpSaving(false); }
+  }
+
   const openShifts = shifts.filter((s) => s.status === "open");
 
   return (
     <div>
       <PageHeader
         title="الصناديق والورديات"
-        subtitle="فتح وإغلاق الورديات ومطابقة النقد المتوقع مقابل المعدود"
-        actions={<Btn onClick={() => setOpenModal(true)}><Plus className="h-4 w-4" /> فتح وردية</Btn>}
+        subtitle="فتح وإغلاق الورديات ومطابقة النقد المتوقع مقابل المعدود — مع دفتر المصروفات"
+        actions={<><Btn variant="secondary" onClick={() => setExpenseModal(true)}><Receipt className="h-4 w-4" /> مصروف</Btn><Btn onClick={() => setOpenModal(true)}><Plus className="h-4 w-4" /> فتح وردية</Btn></>}
       />
 
       <div className="mb-5 rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm">
@@ -107,6 +131,31 @@ export default function CashPage() {
             <Btn variant="secondary" onClick={addRegister} className="px-3 py-2 text-xs"><Plus className="h-3.5 w-3.5" /> إضافة صندوق</Btn>
           </div>
         </div>
+      </div>
+
+      {/* المصروفات */}
+      <div className="mb-6 rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm">
+        <div className="flex items-center justify-between">
+          <h2 className="flex items-center gap-2 font-bold"><Receipt className="h-5 w-5 text-amber-600" /> المصروفات اليومية ({expenses.length})</h2>
+          <Btn variant="secondary" onClick={() => setExpenseModal(true)} className="px-3 py-1.5 text-xs"><Plus className="h-3.5 w-3.5" /> تسجيل مصروف</Btn>
+        </div>
+        {expenses.length === 0 ? (
+          <p className="mt-3 text-sm text-slate-400">لا توجد مصروفات مسجلة — تُخصم المصروفات من مطابقة الوردية وتظهر في تقارير الأرباح.</p>
+        ) : (
+          <ul className="mt-3 divide-y divide-slate-100 rounded-xl border border-slate-100">
+            {expenses.slice(0, 8).map((ex) => (
+              <li key={ex.id} className="flex items-center gap-3 px-3 py-2 text-sm">
+                <span className="font-semibold">{ex.description}</span>
+                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs">{ex.category ?? "عام"}</span>
+                <span className="ms-auto font-bold tabnums text-red-600">-{fmtMoney(ex.amount)}</span>
+                <span className="text-xs text-slate-400">{new Date(ex.createdAt).toLocaleDateString("ar-YE")}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {expenses.length > 0 && (
+          <p className="mt-2 text-xs text-slate-400 flex items-center gap-1"><Wallet className="h-3.5 w-3.5" /> إجمالي المصروفات المعروضة: {fmtMoney(String(expenses.slice(0, 8).reduce((s, e) => s + Number(e.amount), 0)))} — المصروفات تؤثر على صافي الربح المتاح في لوحة التقارير.</p>
+        )}
       </div>
 
       {loading ? <Loading /> : shifts.length === 0 ? (
@@ -157,6 +206,26 @@ export default function CashPage() {
           </Field>
           <Btn onClick={openShift} loading={saving} className="w-full">فتح الوردية</Btn>
         </div>
+      </Modal>
+
+      <Modal open={expenseModal} onClose={() => setExpenseModal(false)} title="تسجيل مصروف جديد">
+        <form onSubmit={addExpense} className="space-y-4" noValidate>
+          <Field label="الوصف" required><Input value={expDesc} onChange={(e) => setExpDesc(e.target.value)} placeholder="نقل، إيجار، ضيافة…" autoFocus /></Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="المبلغ (ر.ي)" required><Input type="number" min="0" step="any" value={expAmount} onChange={(e) => setExpAmount(e.target.value)} className="ltr-nums" /></Field>
+            <Field label="التصنيف"><Select value={expCategory} onChange={(e) => setExpCategory(e.target.value)}>
+              <option value="عام">عام</option><option value="نقل">نقل</option><option value="إيجار">إيجار</option><option value="ضيافة">ضيافة</option><option value="رواتب">رواتب</option><option value="صيانة">صيانة</option><option value="أخرى">أخرى</option>
+            </Select></Field>
+          </div>
+          <Field label="الوردية (اختياري — يربط المصروف بالوردية الحالية)">
+            <Select value={expShift} onChange={(e) => setExpShift(e.target.value)}>
+              <option value="">بدون ربط بوردية</option>
+              {shifts.filter((s) => s.status === "open").map((s) => <option key={s.id} value={s.id}>{s.registerName} — {s.userName}</option>)}
+            </Select>
+          </Field>
+          <Btn type="submit" loading={expSaving} className="w-full"><Receipt className="h-4 w-4" /> حفظ المصروف</Btn>
+          <p className="text-xs leading-5 text-slate-400">المصروف يُسجَّل كحركة مالية وتُخصم من صافي الربح ومتوقع النقد عند إغلاق الوردية.</p>
+        </form>
       </Modal>
 
       <Modal open={!!closeFor} onClose={() => setCloseFor(null)} title={`إغلاق الوردية — ${closeFor?.registerName ?? ""}`}>

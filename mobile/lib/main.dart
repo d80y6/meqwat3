@@ -18,6 +18,9 @@ import 'features/pos/bloc/pos_bloc.dart';
 import 'features/pos/bloc/pos_event.dart';
 import 'features/pos/data/pos_repository.dart';
 import 'features/pos/presentation/pos_page.dart';
+import 'features/purchases/bloc/purchases_bloc.dart';
+import 'features/purchases/data/purchases_repository.dart';
+import 'features/purchases/presentation/purchases_page.dart';
 
 /// Meqwat mobile — offline-first POS client.
 ///
@@ -38,6 +41,7 @@ Future<void> main() async {
   );
   final sync = SyncRepository(api: api, db: db);
   final posRepo = PosRepository(api: api, db: db);
+  final purchasesRepo = PurchasesRepository(api: api, db: db);
   final inventoryRepo = InventoryRepository(api: api);
   final debtsRepo = DebtsRepository(api: api, db: db);
   final authRepo = AuthRepository(api: api);
@@ -45,6 +49,7 @@ Future<void> main() async {
     api: api,
     sync: sync,
     posRepo: posRepo,
+    purchasesRepo: purchasesRepo,
     inventoryRepo: inventoryRepo,
     debtsRepo: debtsRepo,
     authRepo: authRepo,
@@ -57,6 +62,7 @@ class MeqwatApp extends StatelessWidget {
     required this.api,
     required this.sync,
     required this.posRepo,
+    required this.purchasesRepo,
     required this.inventoryRepo,
     required this.debtsRepo,
     required this.authRepo,
@@ -65,6 +71,7 @@ class MeqwatApp extends StatelessWidget {
   final ApiClient api;
   final SyncRepository sync;
   final PosRepository posRepo;
+  final PurchasesRepository purchasesRepo;
   final InventoryRepository inventoryRepo;
   final DebtsRepository debtsRepo;
   final AuthRepository authRepo;
@@ -75,6 +82,7 @@ class MeqwatApp extends StatelessWidget {
       providers: [
         RepositoryProvider.value(value: sync),
         RepositoryProvider.value(value: posRepo),
+        RepositoryProvider.value(value: purchasesRepo),
         RepositoryProvider.value(value: inventoryRepo),
         RepositoryProvider.value(value: debtsRepo),
         RepositoryProvider.value(value: api),
@@ -84,6 +92,7 @@ class MeqwatApp extends StatelessWidget {
         providers: [
           BlocProvider(create: (_) => AuthBloc(repository: authRepo)..add(const AuthSessionChecked())),
           BlocProvider(create: (_) => PosBloc(repository: posRepo, sync: sync)..add(const PosStarted())),
+          BlocProvider(create: (_) => PurchasesBloc(repository: purchasesRepo, sync: sync)..add(const PurchasesStarted())),
           BlocProvider(create: (_) => InventoryBloc(repository: inventoryRepo)..add(const InventoryStarted())),
           BlocProvider(create: (_) => DebtsBloc(repository: debtsRepo, sync: sync)..add(const DebtsStarted())),
         ],
@@ -125,6 +134,7 @@ class AuthGate extends StatelessWidget {
           onLoggedIn: () {
             context.read<AuthBloc>().add(const AuthSessionChecked());
             context.read<PosBloc>().add(const PosRefreshCatalog());
+            context.read<PurchasesBloc>().add(const PurchasesStarted());
             context.read<InventoryBloc>().add(const InventoryRefreshRequested());
             context.read<DebtsBloc>().add(const DebtsRefreshRequested());
           },
@@ -145,7 +155,7 @@ class _HomeShellState extends State<HomeShell> {
 
   @override
   Widget build(BuildContext context) {
-    final pages = const [PosPage(), InventoryPage(), DebtsPage()];
+    final pages = const [PosPage(), PurchasesPage(), InventoryPage(), DebtsPage()];
     return Scaffold(
       drawer: Drawer(
         child: SafeArea(
@@ -196,11 +206,13 @@ class _HomeShellState extends State<HomeShell> {
         selectedIndex: _index,
         onDestinationSelected: (i) {
           setState(() => _index = i);
-          if (i == 1) context.read<InventoryBloc>().add(const InventoryRefreshRequested());
-          if (i == 2) context.read<DebtsBloc>().add(const DebtsRefreshRequested());
+          if (i == 2) context.read<InventoryBloc>().add(const InventoryRefreshRequested());
+          if (i == 3) context.read<DebtsBloc>().add(const DebtsRefreshRequested());
+          if (i == 1) context.read<PurchasesBloc>().add(const PurchasesStarted());
         },
         destinations: const [
           NavigationDestination(icon: Icon(Icons.shopping_cart), label: 'البيع'),
+          NavigationDestination(icon: Icon(Icons.shopping_cart_checkout), label: 'المشتريات'),
           NavigationDestination(icon: Icon(Icons.inventory_2), label: 'المخزون'),
           NavigationDestination(icon: Icon(Icons.account_balance_wallet), label: 'الديون'),
         ],

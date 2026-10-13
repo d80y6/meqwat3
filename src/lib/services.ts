@@ -584,6 +584,162 @@ export async function recordStockAction(
   });
 }
 
+/* --------------------------------- EXPENSES -------------------------------- */
+export async function createExpense(
+  ctx: Ctx,
+  input: { amount: string | number; description: string; shiftId?: string | null; category?: string; clientMutationId?: string | null },
+): Promise<{ id: string; amount: string }> {
+  const amountCents = toCents(input.amount);
+  if (amountCents <= 0) throw new ApiError("مبلغ المصروف يجب أن يكون أكبر من صفر");
+  if (!input.description?.trim()) throw new ApiError("وصف المصروف مطلوب");
+  try {
+    return await withTenantTx(ctx, async (tx) => {
+      const replay = await replayIfProcessed(tx, ctx.tenantId, input.clientMutationId);
+      if (replay) return { ...(replay as { id: string; amount: string }), duplicated: true } as { id: string; amount: string };
+
+      if (input.shiftId) {
+        const [shift] = await tx
+          .select()
+          .from(shifts)
+          .where(and(eq(shifts.id, input.shiftId), eq(shifts.tenantId, ctx.tenantId)))
+          .limit(1);
+        if (!shift || shift.status !== "open") throw new ApiError("الوردية غير مفتوحة");
+      }
+
+      const [row] = await tx
+        .insert(financialTransactions)
+        .values({
+          tenantId: ctx.tenantId,
+          type: "expense",
+          amount: fromCents(-amountCents),
+          refType: "manual",
+          shiftId: input.shiftId ?? null,
+          userId: ctx.userId,
+          description: `${input.category ? `[${input.category}] ` : ""}${input.description.trim()}`,
+        })
+        .returning();
+
+      const result = { id: row.id, amount: fromCents(amountCents) };
+      await rememberProcessed(tx, ctx.tenantId, input.clientMutationId, "expense", row.id, result);
+      return result;
+    });
+  } catch (err) {
+    if (input.clientMutationId && isUniqueViolation(err)) {
+      const [row] = await db
+        .select()
+        .from(processedMutations)
+        .where(and(eq(processedMutations.tenantId, ctx.tenantId), eq(processedMutations.clientMutationId, input.clientMutationId)))
+        .limit(1);
+      if (row) return { ...(row.result as { id: string; amount: string }), duplicated: true } as { id: string; amount: string };
+    }
+    throw err;
+  }
+}
+
+/* --------------------------- PURCHASE RETURNS --------------------------- */
+export interface PurchaseReturnInput {
+  items: { purchaseItemId: string; qty: string | number }[];
+  refundMethod: "cash" | "debt";
+  shiftId?: string | null;
+  notes?: string;
+}
+
+export async function returnPurchaseItems(ctx: Ctx, purchaseId: string, input: PurchaseReturnInput) {
+  return withTenantTx(ctx, async (tx) => {
+    const [purchase] = await tx
+      .select()
+      .from(purchases)
+      .where(and(eq(purchases.id, purchaseId), eq(purchases.tenantId, ctx.tenantId)))
+      .for("update")
+      .limit(1);
+    if (!purchase) throw new ApiError("فاتورة الشراء غير موجودة", 404);
+    if (!input.items?.length) throw new ApiError("اختر بنداً واحداً على الأقل للإرجاع");
+
+    let refundCents = 0;
+    for (const item of input.items) {
+      const [line] = await tx
+        .select()
+        .from(purchaseItems)
+        .where(and(eq(purchaseItems.id, item.purchaseItemId), eq(purchaseItems.purchaseId, purchase.id)))
+        .for("update")
+        .limit(1);
+      if (!line) throw new ApiError("بند فاتورة الشراء غير موجود", 404);
+      const q = toMilliQty(item.qty);
+      const available = toMilliQty(line.qty);
+      if (q <= 0 || q > available) throw new ApiError("كمية الإرجاع أكبر من الكمية المشتراة");
+      refundCents += toCents(mulQtyPrice(item.qty, line.unitCost));
+      // Reduce qty on purchase item (soft, keep history)
+      const newQty = fromMilliQty(available - q);
+      await tx.update(purchaseItems).set({ qty: newQty, total: mulQtyPrice(newQty, line.unitCost) }).where(eq(purchaseItems.id, line.id));
+
+      const [product] = await tx
+        .select()
+        .from(products)
+        .where(and(eq(products.id, line.productId), eq(products.tenantId, ctx.tenantId)))
+        .for("update")
+        .limit(1);
+      if (product && product.trackStock) {
+        if (toMilliQty(product.stockQty) < q) throw new ApiError(`المخزون غير كافٍ لمرتجع الصنف «${product.name}»`);
+        const newStock = subQty(product.stockQty, item.qty);
+        await tx.update(products).set({ stockQty: newStock, updatedAt: new Date() }).where(eq(products.id, product.id));
+        await tx.insert(inventoryMovements).values({
+          tenantId: ctx.tenantId,
+          productId: product.id,
+          type: "purchase_return",
+          qty: fromMilliQty(-q),
+          balanceAfter: newStock,
+          unitCost: line.unitCost,
+          refType: "purchase",
+          refId: purchase.id,
+          userId: ctx.userId,
+          notes: input.notes ?? "مرتجع شراء",
+        });
+      }
+    }
+
+    if (refundCents <= 0) throw new ApiError("قيمة الإرجاع صفر");
+
+    // Adjust supplier liability / cash
+    const [supplier] = await tx
+      .select()
+      .from(suppliers)
+      .where(and(eq(suppliers.id, purchase.supplierId), eq(suppliers.tenantId, ctx.tenantId)))
+      .for("update")
+      .limit(1);
+    if (!supplier) throw new ApiError("المورّد غير موجود", 404);
+
+    if (input.refundMethod === "cash") {
+      await tx.insert(financialTransactions).values({
+        tenantId: ctx.tenantId,
+        type: "supplier_payment",
+        amount: fromCents(refundCents),
+        refType: "purchase",
+        refId: purchase.id,
+        shiftId: input.shiftId ?? purchase.shiftId,
+        userId: ctx.userId,
+        description: `مرتجع شراء من ${supplier.name}`,
+      });
+      await tx.insert(payments).values({
+        tenantId: ctx.tenantId,
+        kind: "supplier_payment",
+        supplierId: supplier.id,
+        purchaseId: purchase.id,
+        shiftId: input.shiftId ?? purchase.shiftId,
+        userId: ctx.userId,
+        amount: fromCents(refundCents),
+        method: "cash",
+        notes: input.notes ?? "مرتجع شراء نقدي",
+      });
+    } else {
+      // Reduce what we owe the supplier
+      const newBalance = Math.max(0, toCents(supplier.balance) - refundCents);
+      await tx.update(suppliers).set({ balance: fromCents(newBalance) }).where(eq(suppliers.id, supplier.id));
+    }
+
+    return { id: purchase.id, refundAmount: fromCents(refundCents) };
+  });
+}
+
 /* ---------------------------------- SHIFTS --------------------------------- */
 export async function openShift(ctx: Ctx, input: { registerId: string; openingCash: string | number }) {
   return withTenantTx(ctx, async (tx) => {

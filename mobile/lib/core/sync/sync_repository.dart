@@ -37,29 +37,29 @@ class SyncRepository {
     final results = (data['results'] as List).cast<Map<String, dynamic>>();
     for (final r in results) {
       final id = r['clientMutationId'] as String;
-      switch (r['status']) {
-        case 'applied':
-          applied++;
-          await db.deleteOutbox(id);
-          final result = (r['result'] as Map<String, dynamic>?);
-          if (result != null && result['invoiceNo'] != null) {
-            await db.recordConfirmed({
-              'id': result['id'],
-              'invoice_no': result['invoiceNo'],
-              'total': result['totalAmount'],
-              'origin_mutation_id': id,
-              'confirmed_at': DateTime.now().toIso8601String(),
-            });
-          }
-        case 'duplicate':
-          duplicates++;
-          await db.deleteOutbox(id);
-        case 'conflict':
-          conflicts++;
-          await db.markOutbox(id, 'conflict', r['error']?.toString());
-        default:
-          failed++;
-          await db.markOutbox(id, 'error', r['error']?.toString());
+      final status = r['status'] as String?;
+      if (status == 'applied') {
+        applied++;
+        await db.deleteOutbox(id);
+        final result = (r['result'] as Map<String, dynamic>?);
+        if (result != null && result['invoiceNo'] != null) {
+          await db.recordConfirmed({
+            'id': result['id'],
+            'invoice_no': result['invoiceNo'],
+            'total': result['totalAmount'],
+            'origin_mutation_id': id,
+            'confirmed_at': DateTime.now().toIso8601String(),
+          });
+        }
+      } else if (status == 'duplicate') {
+        duplicates++;
+        await db.deleteOutbox(id);
+      } else if (status == 'conflict') {
+        conflicts++;
+        await db.markOutbox(id, 'conflict', r['error']?.toString());
+      } else {
+        failed++;
+        await db.markOutbox(id, 'error', r['error']?.toString());
       }
     }
     return SyncOutcome(applied: applied, duplicates: duplicates, conflicts: conflicts, failed: failed);

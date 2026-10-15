@@ -77,45 +77,42 @@ class DebtsPage extends StatelessWidget {
     );
   }
 
-  Future<void> _paymentDialog(BuildContext context, Map<String, dynamic> party, String kind, String actionLabel) async {
-    final amountCtrl = TextEditingController(text: party['balance'].toString());
-    final bloc=context.read<DebtsBloc>();
-    var saving=false;
-    String? error;
-    await showDialog<void>(
-      context: context,
-      barrierDismissible:false,
-      builder: (dialogCtx) => StatefulBuilder(builder:(dialogCtx,setDialogState)=>PopScope(
-        canPop:!saving,
-        child:AlertDialog(
-          title: Text('$actionLabel — ${party['name']}'),
-          content: TextField(
-            controller: amountCtrl, enabled:!saving,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            decoration: InputDecoration(labelText: 'المبلغ (ر.ي)',errorText:error),
-          ),
-          actions: [
-            TextButton(onPressed: saving?null:() => Navigator.pop(dialogCtx), child: const Text('إلغاء')),
-            FilledButton(
-              onPressed: saving?null:() async {
-                final amount=amountCtrl.text.trim();
-                try {
-                  if(Money.cents(amount)<=0 || Money.cents(amount)>Money.cents(party['balance'].toString()))throw const FormatException();
-                } catch(_) {setDialogState(()=>error='أدخل مبلغاً موجباً لا يتجاوز الرصيد');return;}
-                setDialogState((){saving=true;error=null;});
-                final saved=Completer<bool>();
-                bloc.add(DebtPaymentSubmitted(kind:kind,partyId:party['id'].toString(),amount:amount,label:'$actionLabel ${party['name']} — $amount ر.ي',saved:saved));
-                final accepted=await saved.future;
-                if(!dialogCtx.mounted)return;
-                if(accepted){Navigator.pop(dialogCtx);}
-                else{setDialogState((){saving=false;error='لم يُحفظ السداد. راجع الطابور ثم أعد المحاولة.';});}
-              },
-              child: Text(saving?'جارٍ الحفظ…':actionLabel),
-            ),
-          ],
-        ),
-      )),
-    );
-    amountCtrl.dispose();
+  Future<void> _paymentDialog(BuildContext context, Map<String, dynamic> party, String kind, String actionLabel) => showDialog<void>(
+    context:context,barrierDismissible:false,
+    builder:(_)=>_DebtPaymentDialog(bloc:context.read<DebtsBloc>(),party:party,kind:kind,label:actionLabel),
+  );
+}
+class _DebtPaymentDialog extends StatefulWidget {
+  const _DebtPaymentDialog({required this.bloc,required this.party,required this.kind,required this.label});
+  final DebtsBloc bloc;
+  final Map<String,dynamic> party;
+  final String kind,label;
+  @override
+  State<_DebtPaymentDialog> createState()=>_DebtPaymentDialogState();
+}
+class _DebtPaymentDialogState extends State<_DebtPaymentDialog> {
+  late final amountCtrl=TextEditingController(text:widget.party['balance'].toString());
+  bool saving=false;
+  String? error;
+  @override
+  void dispose(){amountCtrl.dispose();super.dispose();}
+  Future<void> submit()async{
+    final amount=amountCtrl.text.trim();
+    try {
+      if(Money.cents(amount)<=0 || Money.cents(amount)>Money.cents(widget.party['balance'].toString()))throw const FormatException();
+    } catch(_) {setState(()=>error='أدخل مبلغاً موجباً لا يتجاوز الرصيد');return;}
+    setState((){saving=true;error=null;});
+    final saved=Completer<bool>();
+    widget.bloc.add(DebtPaymentSubmitted(kind:widget.kind,partyId:widget.party['id'].toString(),amount:amount,label:'${widget.label} ${widget.party['name']} — $amount ر.ي',saved:saved));
+    final accepted=await saved.future;
+    if(!mounted)return;
+    if(accepted){Navigator.pop(context);}
+    else{setState((){saving=false;error='لم يُحفظ السداد. راجع الطابور ثم أعد المحاولة.';});}
   }
+  @override
+  Widget build(BuildContext context)=>PopScope(canPop:!saving,child:AlertDialog(
+    title:Text('${widget.label} — ${widget.party['name']}'),
+    content:TextField(controller:amountCtrl,enabled:!saving,keyboardType:const TextInputType.numberWithOptions(decimal:true),decoration:InputDecoration(labelText:'المبلغ (ر.ي)',errorText:error)),
+    actions:[TextButton(onPressed:saving?null:()=>Navigator.pop(context),child:const Text('إلغاء')),FilledButton(onPressed:saving?null:submit,child:Text(saving?'جارٍ الحفظ…':widget.label))],
+  ));
 }

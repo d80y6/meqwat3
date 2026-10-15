@@ -139,13 +139,7 @@ class _PosPageState extends State<PosPage> {
   }
 
   Future<void> _editQuantity(PosState state,Map<String,Object?> product) async {
-    final controller=TextEditingController(text:Money.formatQuantity(_cart[product['id']]??1000));
-    final input=await showDialog<String>(context:context,builder:(ctx)=>AlertDialog(
-      title:Text('كمية ${product['name']}'),
-      content:TextField(controller:controller,autofocus:true,keyboardType:const TextInputType.numberWithOptions(decimal:true),decoration:const InputDecoration(labelText:'الكمية (حتى ٣ منازل عشرية)',helperText:'صفر لحذف الصنف')),
-      actions:[TextButton(onPressed:()=>Navigator.pop(ctx),child:const Text('إلغاء')),FilledButton(onPressed:()=>Navigator.pop(ctx,controller.text),child:const Text('تطبيق'))],
-    ));
-    controller.dispose();
+    final input=await showDialog<String>(context:context,builder:(_)=>_QuantityDialog(name:product['name'].toString(),initial:Money.formatQuantity(_cart[product['id']]??1000)));
     if(!mounted||input==null)return;
     try{_changeQuantity(state,product,Money.quantity(input));}
     on FormatException catch(e){ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(e.message)));}
@@ -181,4 +175,22 @@ class _PosPageState extends State<PosPage> {
       })]),
     ])));
   }
+}
+
+class _QuantityDialog extends StatefulWidget {
+  const _QuantityDialog({required this.name,required this.initial});
+  final String name,initial;
+  @override
+  State<_QuantityDialog> createState()=>_QuantityDialogState();
+}
+class _QuantityDialogState extends State<_QuantityDialog> {
+  late final controller=TextEditingController(text:widget.initial);
+  @override
+  void dispose(){controller.dispose();super.dispose();}
+  @override
+  Widget build(BuildContext context)=>AlertDialog(
+    title:Text('كمية ${widget.name}'),
+    content:TextField(controller:controller,autofocus:true,keyboardType:const TextInputType.numberWithOptions(decimal:true),decoration:const InputDecoration(labelText:'الكمية (حتى ٣ منازل عشرية)',helperText:'صفر لحذف الصنف')),
+    actions:[TextButton(onPressed:()=>Navigator.pop(context),child:const Text('إلغاء')),FilledButton(onPressed:()=>Navigator.pop(context,controller.text),child:const Text('تطبيق'))],
+  );
 }

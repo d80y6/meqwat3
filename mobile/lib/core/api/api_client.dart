@@ -72,7 +72,7 @@ class ApiClient {
   Future<Map<String,dynamic>> patch(String path,Map<String,dynamic> body) => _request('PATCH',path,body:body);
   Future<Map<String, dynamic>> post(String path, Map<String, dynamic> body) async {
     if(body.containsKey('clientMutationId')) return _request('POST',path,body:body);
-    final durable=RegExp(r'^/api/(inventory|payments|expenses)$').hasMatch(path) || RegExp(r'^/api/(sales|purchases)/[^/]+/return$').hasMatch(path);
+    final durable=RegExp(r'^/api/payments/[^/]+/(reverse|allocate)$').hasMatch(path) || RegExp(r'^/api/(inventory|payments|expenses)$').hasMatch(path) || RegExp(r'^/api/(sales|purchases)/[^/]+/return$').hasMatch(path);
     final owner=store?.ownerKey;
     if(durable && owner==null)throw ApiException('جلسة متجر مطلوبة لحفظ العملية');
     final generation=_generation;

@@ -9,14 +9,14 @@ class MockDebtSync extends Mock implements SyncRepository {}
 void main(){
  test('failed local payment save is not acknowledged and never synced',() async {
   final repo=MockDebtsRepository(),sync=MockDebtSync();
-  when(()=>repo.queuePayment(kind:any(named:'kind'),customerId:any(named:'customerId'),supplierId:any(named:'supplierId'),amount:any(named:'amount'),label:any(named:'label'))).thenThrow(StateError('disk full'));
+  when(()=>repo.queuePayment(kind:any(named:'kind'),customerId:any(named:'customerId'),supplierId:any(named:'supplierId'),amount:any(named:'amount'),label:any(named:'label'),allocationMode:any(named:'allocationMode'),allocations:any(named:'allocations'))).thenThrow(StateError('disk full'));
   final bloc=DebtsBloc(repository:repo,sync:sync);final saved=Completer<bool>();
   bloc.add(DebtPaymentSubmitted(kind:'customer_payment',partyId:'fixture',amount:'0.10',label:'fixture',saved:saved));
   expect(await saved.future,false);await bloc.close();verifyNever(()=>sync.syncNow());
  });
  test('durable payment acknowledgement survives a later count/read failure',() async {
   final repo=MockDebtsRepository(),sync=MockDebtSync();
-  when(()=>repo.queuePayment(kind:any(named:'kind'),customerId:any(named:'customerId'),supplierId:any(named:'supplierId'),amount:any(named:'amount'),label:any(named:'label'))).thenAnswer((_)async=>'stored');
+  when(()=>repo.queuePayment(kind:any(named:'kind'),customerId:any(named:'customerId'),supplierId:any(named:'supplierId'),amount:any(named:'amount'),label:any(named:'label'),allocationMode:any(named:'allocationMode'),allocations:any(named:'allocations'))).thenAnswer((_)async=>'stored');
   when(()=>repo.pendingCount()).thenThrow(StateError('read failed'));
   final bloc=DebtsBloc(repository:repo,sync:sync);final saved=Completer<bool>();
   bloc.add(DebtPaymentSubmitted(kind:'customer_payment',partyId:'fixture',amount:'0.10',label:'fixture',saved:saved));

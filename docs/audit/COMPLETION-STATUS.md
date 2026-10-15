@@ -49,3 +49,27 @@ This is a new implementation checkpoint after PR #3's original audit. **NOT READ
 - Stable ordering for paged operational records. Debt summary uses one SQL snapshot of all positive balances, including disabled accounts; settling an existing disabled supplier payable remains allowed, while new purchases stay blocked.
 - Mobile payment dialog waits for durable enqueue, preserves input on failure, and distinguishes a failed refresh after a successful save. Fractional POS quantities use exact integer thousandths and reject stock/total overflow before updating drafts.
 - Local latest backend typecheck/build, 67 tests and 37 browser/API tests passed. Final hosted rerun is required for the new native edits; previous all-job green checkpoint is `55aca77` / run `38793293945`.
+
+
+## Approved operational accounting implementation
+User scope is recorded in APPROVED-BUSINESS-SCOPE.md: both FIFO/manual allocation,
+separate branch stock/cash, operational ledgers, **no consignment or full GL**.
+
+- Migration 0009 adds immutable tenant-constrained payment allocations and one full
+  compensating reversal per general payment. It does **not** backfill guessed historical allocations.
+- New general payments default to oldest invoice first or accept exact manual allocations.
+  Invoice returns now account for allocated later settlements. Reversal leaves the original
+  receipt and allocations intact; a payment already consumed by a refund cannot be reversed.
+- Historical discrepancies block new general settlement/debt reduction until owner-reviewed
+  allocation with a reason. Missing opening invoice/history is not silently synthesized.
+- Web debt dialogs include invoice allocation, receipt detail, full reversal and owner historical
+  reconciliation. Native equivalents queue allocation selections with the durable payment;
+  reversal/reconciliation are online operations with durable retry IDs.
+- Local backend: typecheck/build, lint 0 errors/1 warning, 67 Vitest PASS; **42/42 API/browser
+  PASS (58.4s)**, including a real manual-allocation browser journey and forced rollback.
+- Latest hosted all-four-job green checkpoint is **ea34db3 / run 38798343832**, including
+  the fractional checkout widget test and corrected dialog lifetime. New allocation changes
+  require a subsequent hosted run; their native screens are not yet certified.
+- Branch-specific inventory/cash/access/transfers remain the next implementation stage.
+  SMTP, managed deployment, historical business records, physical printing and private release
+  signing are still external acceptance gates. The broad request is not yet complete.

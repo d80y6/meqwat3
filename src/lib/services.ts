@@ -1,10 +1,11 @@
+import { settlementInvoices, isReconciled, planAllocation, insertAllocations, type AllocationOptions } from "./payment-allocation";
 import { createHash } from "node:crypto";
 import { hasPermission, type Permission } from "./permissions";
 import { db } from "@/db";
 import {
   tenants, products, customers, suppliers, purchases, purchaseItems, sales, saleItems,
   payments, inventoryMovements, financialTransactions, shifts, cashRegisters,
-  processedMutations, tenantCounters, subscriptions, plans, auditLogs,
+  processedMutations, tenantCounters, subscriptions, plans, auditLogs, paymentAllocations,
 } from "@/db/schema";
 import { and, eq, sql } from "drizzle-orm";
 import { ApiError } from "./api";
@@ -341,11 +342,9 @@ export async function returnSaleItems(ctx: Ctx, saleId: string, input: ReturnInp
       }
     }
 
-    const [refunds] = await tx.select({ cash: sql<string>`coalesce(sum(case when ${payments.kind} = 'sale_refund' then ${payments.amount} else 0 end),0)`,
-      debt: sql<string>`coalesce(sum(case when ${payments.kind} = 'sale_debt_refund' then ${payments.amount} else 0 end),0)` })
-      .from(payments).where(and(eq(payments.saleId, sale.id), eq(payments.tenantId, ctx.tenantId)));
+    const [settlement]=await settlementInvoices(tx,ctx.tenantId,"customer_payment",undefined,sale.id);
     if (input.refundMethod === "cash") {
-      if (refundCents > toCents(sale.paidAmount) - toCents(refunds.cash)) throw new ApiError("الإرجاع النقدي أكبر من المدفوع؛ استخدم تخفيض الدين");
+      if (refundCents > toCents(settlement.refundable)) throw new ApiError("الإرجاع النقدي أكبر من المدفوع؛ استخدم تخفيض الدين");
       await tx.insert(financialTransactions).values({
         tenantId: ctx.tenantId, type: "sale_refund", amount: fromCents(-refundCents),
         refType: "sale", refId: sale.id, shiftId: input.shiftId ?? null, userId: ctx.userId,
@@ -364,7 +363,8 @@ export async function returnSaleItems(ctx: Ctx, saleId: string, input: ReturnInp
         .for("update")
         .limit(1);
       if (!customer) throw new ApiError("العميل غير موجود", 404);
-      if (refundCents > toCents(customer.balance) || refundCents > toCents(sale.creditAmount) - toCents(refunds.debt)) throw new ApiError("الإرجاع أكبر من الدين المتبقي؛ يلزم تسوية موثقة");
+      if (refundCents > toCents(customer.balance) || refundCents > toCents(settlement.outstanding)) throw new ApiError("الإرجاع أكبر من الدين المتبقي؛ يلزم تسوية موثقة");
+      if(!isReconciled(await settlementInvoices(tx,ctx.tenantId,"customer_payment",customer.id),customer.balance))throw new ApiError("راجع التخصيصات التاريخية قبل تخفيض الدين",409,"RECONCILIATION_REQUIRED");
       const newBalance = toCents(customer.balance) - refundCents;
       await tx.insert(payments).values({ tenantId: ctx.tenantId, kind: "sale_debt_refund", saleId: sale.id,
         customerId: customer.id, userId: ctx.userId, amount: fromCents(refundCents), method: "credit" });
@@ -496,7 +496,7 @@ export interface PaymentResult {
 
 export async function recordPayment(
   ctx: Ctx,
-  input: { kind: "customer_payment" | "supplier_payment"; customerId?: string; supplierId?: string; amount: string | number; method?: string; shiftId?: string | null; notes?: string; clientMutationId?: string | null; source?: string },
+  input: AllocationOptions & { kind: "customer_payment" | "supplier_payment"; customerId?: string; supplierId?: string; amount: string | number; method?: string; shiftId?: string | null; notes?: string; clientMutationId?: string | null; source?: string },
 ): Promise<PaymentResult> {
   const amountCents = toCents(input.amount);
   if (amountCents <= 0) throw new ApiError("مبلغ السداد يجب أن يكون أكبر من صفر");
@@ -516,6 +516,9 @@ export async function recordPayment(
           .limit(1);
         if (!customer) throw new ApiError("العميل غير موجود", 404);
         if (amountCents > toCents(customer.balance)) throw new ApiError("مبلغ السداد أكبر من دين العميل الحالي");
+        const invoices=await settlementInvoices(tx,ctx.tenantId,'customer_payment',customer.id);
+        if(!isReconciled(invoices,customer.balance))throw new ApiError('يلزم تسوية تخصيص المدفوعات التاريخية قبل السداد',409,'RECONCILIATION_REQUIRED');
+        const selected=planAllocation(invoices,input.amount,input);
         const newBalance = fromCents(toCents(customer.balance) - amountCents);
         await tx.update(customers).set({ balance: newBalance }).where(eq(customers.id, customer.id));
         const [payment] = await tx.insert(payments).values({
@@ -528,6 +531,7 @@ export async function recordPayment(
           refType: "payment", refId: payment.id, shiftId: input.shiftId ?? null, userId: ctx.userId,
           description: `تحصيل دين من ${customer.name}`,
         });
+        await insertAllocations(tx,ctx.tenantId,payment.id,'customer_payment',selected);
         result = { id: payment.id, newBalance };
       } else {
         if (!input.supplierId) throw new ApiError("اختر المورّد");
@@ -539,6 +543,9 @@ export async function recordPayment(
           .limit(1);
         if (!supplier) throw new ApiError("المورّد غير موجود", 404);
         if (amountCents > toCents(supplier.balance)) throw new ApiError("مبلغ السداد أكبر من المستحق للمورّد");
+        const invoices=await settlementInvoices(tx,ctx.tenantId,'supplier_payment',supplier.id);
+        if(!isReconciled(invoices,supplier.balance))throw new ApiError('يلزم تسوية تخصيص المدفوعات التاريخية قبل السداد',409,'RECONCILIATION_REQUIRED');
+        const selected=planAllocation(invoices,input.amount,input);
         const newBalance = fromCents(toCents(supplier.balance) - amountCents);
         await tx.update(suppliers).set({ balance: newBalance }).where(eq(suppliers.id, supplier.id));
         const [payment] = await tx.insert(payments).values({
@@ -551,6 +558,7 @@ export async function recordPayment(
           refType: "payment", refId: payment.id, shiftId: input.shiftId ?? null, userId: ctx.userId,
           description: `سداد للمورّد ${supplier.name}`,
         });
+        await insertAllocations(tx,ctx.tenantId,payment.id,'supplier_payment',selected);
         result = { id: payment.id, newBalance };
       }
       return result;
@@ -706,11 +714,9 @@ export async function returnPurchaseItems(ctx: Ctx, purchaseId: string, input: P
       .limit(1);
     if (!supplier || !supplier.isActive) throw new ApiError("المورّد غير موجود أو موقوف", 404);
 
-    const [refunds] = await tx.select({ cash: sql<string>`coalesce(sum(case when ${payments.kind} = 'supplier_refund' then ${payments.amount} else 0 end),0)`,
-      debt: sql<string>`coalesce(sum(case when ${payments.kind} = 'supplier_debt_refund' then ${payments.amount} else 0 end),0)` })
-      .from(payments).where(and(eq(payments.purchaseId, purchase.id), eq(payments.tenantId, ctx.tenantId)));
+    const [settlement]=await settlementInvoices(tx,ctx.tenantId,"supplier_payment",undefined,purchase.id);
     if (input.refundMethod === "cash") {
-      if (refundCents > toCents(purchase.paidAmount) - toCents(refunds.cash)) throw new ApiError("الإرجاع النقدي أكبر من المدفوع للمورّد");
+      if (refundCents > toCents(settlement.refundable)) throw new ApiError("الإرجاع النقدي أكبر من المدفوع للمورّد");
       await tx.insert(financialTransactions).values({
         tenantId: ctx.tenantId,
         type: "supplier_payment",
@@ -734,7 +740,8 @@ export async function returnPurchaseItems(ctx: Ctx, purchaseId: string, input: P
       });
     } else {
       // Reduce what we owe the supplier
-      if (refundCents > toCents(supplier.balance) || refundCents > toCents(purchase.totalAmount) - toCents(purchase.paidAmount) - toCents(refunds.debt)) throw new ApiError("الإرجاع أكبر من الدين المتبقي؛ يلزم تسوية موثقة");
+      if (refundCents > toCents(supplier.balance) || refundCents > toCents(settlement.outstanding)) throw new ApiError("الإرجاع أكبر من الدين المتبقي؛ يلزم تسوية موثقة");
+      if(!isReconciled(await settlementInvoices(tx,ctx.tenantId,"supplier_payment",supplier.id),supplier.balance))throw new ApiError("راجع التخصيصات التاريخية قبل تخفيض المستحق",409,"RECONCILIATION_REQUIRED");
       const newBalance = toCents(supplier.balance) - refundCents;
       await tx.insert(payments).values({ tenantId: ctx.tenantId, kind: "supplier_debt_refund", purchaseId: purchase.id,
         supplierId: supplier.id, userId: ctx.userId, amount: fromCents(refundCents), method: "credit" });
@@ -817,4 +824,60 @@ export async function getTenantPlan(tenantId: string, connection: typeof db | Tx
     .orderBy(sql`${subscriptions.createdAt} desc`)
     .limit(1);
   return row?.plan ?? null;
+}
+
+
+/** Historical allocation changes no money. Owner review/reason is mandatory. */
+export async function allocateHistoricalPayment(ctx:Ctx,paymentId:string,input:AllocationOptions & {reason:string;clientMutationId:string}) {
+  if(ctx.role!=="tenant_owner")throw new ApiError("المراجعة التاريخية لمالك المتجر فقط",403);
+  if(typeof input.reason!=="string"||!input.reason.trim()||input.reason.length>500)throw new ApiError("سبب المراجعة مطلوب (حتى ٥٠٠ حرف)");
+  return operation(ctx,{...input,paymentId},"payments:manage","payment.allocate",async tx=>{
+    const [p]=await tx.select().from(payments).where(and(eq(payments.id,paymentId),eq(payments.tenantId,ctx.tenantId))).for("update");
+    if(!p)throw new ApiError("السداد غير موجود",404);
+    if(!["customer_payment","supplier_payment"].includes(p.kind)||p.saleId||p.purchaseId||p.reversesPaymentId||toCents(p.amount)<=0)throw new ApiError("هذه الدفعة ليست سداداً عاماً قابلاً للتخصيص",409);
+    const [existing]=await tx.select().from(paymentAllocations).where(eq(paymentAllocations.paymentId,p.id));
+    const [reversal]=await tx.select().from(payments).where(eq(payments.reversesPaymentId,p.id));
+    if(existing||reversal)throw new ApiError("السداد مخصص أو معكوس مسبقاً",409);
+    const kind=p.kind as "customer_payment"|"supplier_payment";
+    const rows=await settlementInvoices(tx,ctx.tenantId,kind,(p.customerId??p.supplierId)!);
+    const selected=planAllocation(rows,p.amount,input);
+    await insertAllocations(tx,ctx.tenantId,p.id,kind,selected);
+    return {id:p.id,allocations:selected,reason:input.reason};
+  });
+}
+
+/** Full reversal appends a compensating payment/cash entry; never edits the original. */
+export async function reversePayment(ctx:Ctx,paymentId:string,input:{reason:string;shiftId?:string|null;clientMutationId:string}) {
+  if(typeof input.reason!=="string"||!input.reason.trim()||input.reason.length>500)throw new ApiError("سبب العكس مطلوب (حتى ٥٠٠ حرف)");
+  return operation(ctx,{...input,paymentId},"payments:manage","payment.reverse",async tx=>{
+    await lockShift(tx,ctx,input.shiftId);
+    const [p]=await tx.select().from(payments).where(and(eq(payments.id,paymentId),eq(payments.tenantId,ctx.tenantId))).for("update");
+    if(!p)throw new ApiError("السداد غير موجود",404);
+    if(!["customer_payment","supplier_payment"].includes(p.kind)||p.saleId||p.purchaseId||p.reversesPaymentId)throw new ApiError("يُعكس السداد العام فقط؛ دفعات الفواتير تُصحح بمرتجع موثق",409);
+    const [reversed]=await tx.select().from(payments).where(eq(payments.reversesPaymentId,p.id));
+    if(reversed)throw new ApiError("السداد معكوس مسبقاً",409);
+    const allocations=await tx.select().from(paymentAllocations).where(eq(paymentAllocations.paymentId,p.id));
+    if(allocations.reduce((s,a)=>s+BigInt(toCents(a.amount)),0n)!==BigInt(toCents(p.amount)))throw new ApiError("خصص السداد التاريخي قبل عكسه",409,"RECONCILIATION_REQUIRED");
+    const customer=p.kind==="customer_payment";
+    const invoices=await settlementInvoices(tx,ctx.tenantId,customer?"customer_payment":"supplier_payment",(p.customerId??p.supplierId)!);
+    for(const a of allocations) {
+      const invoice=invoices.find(i=>i.id===(a.saleId??a.purchaseId));
+      if(!invoice||toCents(invoice.refundable)<toCents(a.amount))throw new ApiError("لا يمكن عكس مبلغ استُخدم لتمويل مرتجع؛ راجع تسوية الفاتورة",409);
+    }
+    let newBalance:string;
+    if(customer) {
+      const [party]=await tx.select().from(customers).where(and(eq(customers.id,p.customerId!),eq(customers.tenantId,ctx.tenantId))).for("update");
+      if(!party)throw new ApiError("العميل غير موجود",404);
+      newBalance=fromCents(toCents(party.balance)+toCents(p.amount));
+      await tx.update(customers).set({balance:newBalance}).where(eq(customers.id,party.id));
+    } else {
+      const [party]=await tx.select().from(suppliers).where(and(eq(suppliers.id,p.supplierId!),eq(suppliers.tenantId,ctx.tenantId))).for("update");
+      if(!party)throw new ApiError("المورّد غير موجود",404);
+      newBalance=fromCents(toCents(party.balance)+toCents(p.amount));
+      await tx.update(suppliers).set({balance:newBalance}).where(eq(suppliers.id,party.id));
+    }
+    const [reversal]=await tx.insert(payments).values({tenantId:ctx.tenantId,kind:customer?"customer_payment_reversal":"supplier_payment_reversal",customerId:p.customerId,supplierId:p.supplierId,reversesPaymentId:p.id,amount:p.amount,method:p.method,userId:ctx.userId,shiftId:input.shiftId??null,notes:input.reason,clientMutationId:input.clientMutationId}).returning();
+    if(p.method==="cash")await tx.insert(financialTransactions).values({tenantId:ctx.tenantId,type:"adjustment",amount:fromCents((customer?-1:1)*toCents(p.amount)),refType:"payment_reversal",refId:reversal.id,userId:ctx.userId,shiftId:input.shiftId??null,description:input.reason});
+    return {id:reversal.id,reversesPaymentId:p.id,newBalance};
+  });
 }

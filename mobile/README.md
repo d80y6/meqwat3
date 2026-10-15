@@ -80,3 +80,12 @@ Latest executed hosted evidence: see `docs/audit/COMPLETION-STATUS.md` in the re
 - Sale, purchase and debt payment success means **durably queued**, not posted. Server results and conflicts remain visible in the outbox.
 - Debt dialogs retain input on storage failure. A successful save followed by a failed refresh must be reconciled from the outbox, not entered again.
 - Unposted conflicts may be cancelled with a reason through the server. Their original local records remain; corrections are a new entry. Already-posted documents cannot be cancelled by this mechanism.
+
+
+## Invoice settlements
+Debt payment dialogs default to oldest-invoice-first and offer manual allocation. Allocation
+choices are saved with the outbox operation; the server revalidates outstanding amounts on
+sync. Payment history exposes immutable allocations, full compensating reversals and
+owner-only historical reconciliation with a reason. Online actions preserve retry IDs.
+Historical discrepancies are surfaced, not assigned to invoices silently. No consignment
+or full general ledger is in the approved scope. Separate branch stock/cash remains pending.

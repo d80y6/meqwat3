@@ -419,6 +419,7 @@ export const payments = pgTable(
     tenantId: uuid("tenant_id")
       .notNull()
       .references(() => tenants.id, { onDelete: "cascade" }),
+    reversesPaymentId: uuid("reverses_payment_id"),
     /** customer_payment = cash in (debt collection); supplier_payment = cash out. */
     kind: varchar("kind", { length: 30 }).notNull(),
     customerId: uuid("customer_id").references(() => customers.id),
@@ -582,4 +583,15 @@ export const platformReceipts=pgTable('platform_receipts',{
   id:uuid('id').primaryKey().defaultRandom(),invoiceId:uuid('invoice_id').notNull().references(()=>platformInvoices.id),
   kind:text('kind').notNull(),amount:money('amount').notNull(),reference:text('reference').notNull(),
   createdBy:uuid('created_by').notNull().references(()=>users.id),createdAt:ts('created_at').notNull().defaultNow(),
+});
+
+
+export const paymentAllocations = pgTable("payment_allocations", {
+  id:uuid("id").primaryKey().defaultRandom(),
+  tenantId:uuid("tenant_id").notNull(),
+  paymentId:uuid("payment_id").notNull(),
+  saleId:uuid("sale_id"),
+  purchaseId:uuid("purchase_id"),
+  amount:money("amount").notNull(),
+  createdAt:ts("created_at").notNull().defaultNow(),
 });

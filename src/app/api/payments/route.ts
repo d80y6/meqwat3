@@ -44,6 +44,7 @@ export const POST = handler(async (req: Request) => {
     { tenantId: user.tenantId, userId: user.id, role: user.role },
     {
       kind: body.kind,
+      allocationMode:body.allocationMode, allocations:body.allocations,
       customerId: body.customerId,
       supplierId: body.supplierId,
       amount: body.amount,

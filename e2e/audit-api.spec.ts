@@ -277,7 +277,9 @@ test.describe("Independent audit: real HTTP and real PostgreSQL", () => {
   test('whole-ledger debt totals include disabled accounts beyond 200 and stay tenant scoped',async({request})=>{
     expect((await request.get('/api/debts/summary')).status()).toBe(401);
     await db.query("insert into customers(tenant_id,name,balance,is_active) select $1,'summary-customer-'||n,1,n<>205 from generate_series(1,205) n",[tenants[1]]);
-    const disabled=(await db.query("insert into suppliers(tenant_id,name,balance,is_active) values($1,'disabled payable',0.20,false) returning id",[tenants[1]])).rows[0].id;
+    const disabled=(await db.query("insert into suppliers(tenant_id,name,balance,is_active) values($1,'disabled payable',0,true) returning id",[tenants[1]])).rows[0].id;
+    expect((await b.post('/api/purchases',{data:{supplierId:disabled,paidAmount:'0',items:[{productId:productB,qty:'1',unitCost:'0.20'}],clientMutationId:randomUUID()}})).status()).toBe(201);
+    expect((await b.patch(`/api/suppliers/${disabled}`,{data:{isActive:false}})).status()).toBe(200);
     const expected=async()=> (await db.query("select (select coalesce(sum(balance),0)::text from customers where tenant_id=$1 and balance>0) receivables,(select coalesce(sum(balance),0)::text from suppliers where tenant_id=$1 and balance>0) payables",[tenants[1]])).rows[0];
     expect((await (await b.get('/api/debts/summary')).json()).data).toEqual(await expected());
     const debtList=(await (await b.get('/api/customers?debt=1&limit=200&offset=200')).json()).data;
@@ -288,6 +290,85 @@ test.describe("Independent audit: real HTTP and real PostgreSQL", () => {
     expect((await (await b.get('/api/debts/summary')).json()).data).toEqual(await expected());
     const limited=await login(`inactive-${stamp}@test.ye`);
     try {expect((await limited.get('/api/debts/summary')).status()).toBe(403);} finally {await limited.dispose();}
+  });
+
+  test('FIFO and manual allocations reconcile, replay once, and support refunds after settlement',async()=>{
+    const customer=(await (await b.post('/api/customers',{data:{name:'allocated customer',creditLimit:'100'}})).json()).data.id;
+    const sell=async(price:string)=>(await (await b.post('/api/sales',{data:{customerId:customer,paidAmount:'0',items:[{productId:productB,qty:'1',unitPrice:price}],clientMutationId:randomUUID()}})).json()).data.id;
+    const first=await sell('0.30'),second=await sell('0.50');
+    const payload={kind:'customer_payment',customerId:customer,amount:'0.40',clientMutationId:randomUUID()};
+    const replies=await Promise.all(Array.from({length:5},()=>b.post('/api/payments',{data:payload})));
+    expect(replies.every(r=>[200,201].includes(r.status()))).toBe(true);
+    const payment=(await replies[0].json()).data.id;
+    const allocations=(await (await b.get(`/api/payments/${payment}`)).json()).data.allocations;
+    expect(allocations.find((x:{saleId:string})=>x.saleId===first).amount).toBe('0.30');
+    expect(allocations.find((x:{saleId:string})=>x.saleId===second).amount).toBe('0.10');
+    expect((await db.query('select count(*)::int n from payments where client_mutation_id=$1',[payload.clientMutationId])).rows[0].n).toBe(1);
+    const foreign=(await db.query('select id from sales where tenant_id=$1 limit 1',[tenants[0]])).rows[0].id;
+    expect((await b.post('/api/payments',{data:{...payload,clientMutationId:randomUUID(),allocationMode:'manual',allocations:[{invoiceId:foreign,amount:'0.40'}]}})).status()).toBe(404);
+    expect((await b.post('/api/payments',{data:{...payload,clientMutationId:randomUUID(),allocationMode:'manual',allocations:[{invoiceId:second,amount:'0.39'}]}})).status()).toBe(409);
+    const final=(await (await b.post('/api/payments',{data:{...payload,clientMutationId:randomUUID(),allocationMode:'manual',allocations:[{invoiceId:second,amount:'0.40'}]}})).json()).data.id;
+    const line=(await db.query('select id from sale_items where sale_id=$1',[second])).rows[0].id;
+    expect((await b.post(`/api/sales/${second}/return`,{data:{clientMutationId:randomUUID(),refundMethod:'debt',items:[{saleItemId:line,qty:'1',restock:true}]}})).status()).toBe(400);
+    expect((await b.post(`/api/sales/${second}/return`,{data:{clientMutationId:randomUUID(),refundMethod:'cash',items:[{saleItemId:line,qty:'1',restock:true}]}})).status()).toBe(200);
+    expect((await b.post(`/api/payments/${final}/reverse`,{data:{clientMutationId:randomUUID(),reason:'must not reverse refunded settlement'}})).status()).toBe(409);
+    const summary=(await (await b.get(`/api/payments/invoices?kind=customer_payment&partyId=${customer}`)).json()).data;
+    expect(summary.reconciled).toBe(true);expect(summary.balance).toBe('0.00');
+  });
+  test('payment reversal is append-only, exact and idempotent',async()=>{
+    const customer=(await (await b.post('/api/customers',{data:{name:'reversal customer',creditLimit:'100'}})).json()).data.id;
+    await b.post('/api/sales',{data:{customerId:customer,paidAmount:'0',items:[{productId:productB,qty:'1',unitPrice:'0.50'}],clientMutationId:randomUUID()}});
+    const payment=(await (await b.post('/api/payments',{data:{kind:'customer_payment',customerId:customer,amount:'0.20',clientMutationId:randomUUID()}})).json()).data.id;
+    const payload={clientMutationId:randomUUID(),reason:'correct a recorded payment'};
+    const replies=await Promise.all(Array.from({length:4},()=>b.post(`/api/payments/${payment}/reverse`,{data:payload})));
+    expect(replies.every(r=>r.status()===200)).toBe(true);
+    const reversal=(await replies[0].json()).data.id;
+    expect((await db.query('select balance from customers where id=$1',[customer])).rows[0].balance).toBe('0.50');
+    expect((await db.query('select amount from payments where id=$1',[payment])).rows[0].amount).toBe('0.20');
+    expect((await db.query('select sum(amount)::text total from financial_transactions where ref_id=any($1::uuid[])',[[payment,reversal]])).rows[0].total).toBe('0.00');
+    expect((await b.post(`/api/payments/${payment}/reverse`,{data:{...payload,clientMutationId:randomUUID()}})).status()).toBe(409);
+    expect((await (await b.get(`/api/payments/invoices?kind=customer_payment&partyId=${customer}`)).json()).data.reconciled).toBe(true);
+  });
+  test('historical unallocated payments require explicit owner reconciliation without rewriting balances',async()=>{
+    const customer=(await (await b.post('/api/customers',{data:{name:'historical customer',creditLimit:'100'}})).json()).data.id;
+    const sale=(await (await b.post('/api/sales',{data:{customerId:customer,paidAmount:'0',items:[{productId:productB,qty:'1',unitPrice:'0.70'}],clientMutationId:randomUUID()}})).json()).data.id;
+    const owner=(await (await b.get('/api/auth/me')).json()).data.user.id;
+    const payment=(await db.query("insert into payments(tenant_id,customer_id,user_id,kind,amount,method) values($1,$2,$3,'customer_payment',0.20,'transfer') returning id",[tenants[1],customer,owner])).rows[0].id;
+    await db.query('update customers set balance=balance-0.20 where id=$1',[customer]);
+    expect((await b.post('/api/payments',{data:{kind:'customer_payment',customerId:customer,amount:'0.10',clientMutationId:randomUUID()}})).status()).toBe(409);
+    const data={clientMutationId:randomUUID(),reason:'reviewed historical bank statement',allocationMode:'manual',allocations:[{invoiceId:sale,amount:'0.20'}]};
+    expect((await b.post(`/api/payments/${payment}/allocate`,{data:{...data,reason:''}})).status()).toBe(400);
+    expect((await b.post(`/api/payments/${payment}/allocate`,{data})).status()).toBe(200);
+    expect((await b.post(`/api/payments/${payment}/allocate`,{data})).status()).toBe(200);
+    expect((await db.query('select balance from customers where id=$1',[customer])).rows[0].balance).toBe('0.50');
+    expect((await b.post('/api/payments',{data:{kind:'customer_payment',customerId:customer,amount:'0.10',clientMutationId:randomUUID()}})).status()).toBe(201);
+  });
+
+  test('web manual allocation form posts exact per-invoice amounts',async({page})=>{
+    const customer=(await (await b.post('/api/customers',{data:{name:'manual UI customer',creditLimit:'10'}})).json()).data.id;
+    const invoices=[];
+    for(const amount of ['0.10','0.20'])invoices.push((await (await b.post('/api/sales',{data:{customerId:customer,paidAmount:'0',items:[{productId:productB,qty:'1',unitPrice:amount}],clientMutationId:randomUUID()}})).json()).data);
+    await page.context().addCookies((await b.storageState()).cookies);await page.goto('/debts');
+    await page.getByRole('row').filter({hasText:'manual UI customer'}).getByRole('button',{name:'تحصيل'}).click();
+    await page.getByLabel('تخصيص الفواتير').selectOption('manual');
+    await page.getByLabel(`تخصيص ${invoices[0].invoiceNo}`,{exact:true}).fill('0.10');
+    await page.getByLabel(`تخصيص ${invoices[1].invoiceNo}`,{exact:true}).fill('0.20');
+    await page.getByRole('button',{name:'تأكيد',exact:true}).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    expect((await db.query('select balance from customers where id=$1',[customer])).rows[0].balance).toBe('0.00');
+    expect((await db.query('select count(*)::int n,sum(amount)::text amount from payment_allocations where sale_id=any($1::uuid[])',[invoices.map(i=>i.id)])).rows[0]).toEqual({n:2,amount:'0.30'});
+  });
+  test('allocation failure rolls back receipt, cash, party balance and replay marker',async()=>{
+    const customer=(await (await b.post('/api/customers',{data:{name:'allocation rollback',creditLimit:'10'}})).json()).data.id;
+    await b.post('/api/sales',{data:{customerId:customer,paidAmount:'0',items:[{productId:productB,qty:'1',unitPrice:'0.50'}],clientMutationId:randomUUID()}});
+    const key=randomUUID();
+    await db.query("create function allocation_test_fail() returns trigger language plpgsql as $$ begin raise exception 'test allocation rollback'; end $$; create trigger allocation_test_fail before insert on payment_allocations for each row execute function allocation_test_fail()");
+    try {
+      expect((await b.post('/api/payments',{data:{kind:'customer_payment',customerId:customer,amount:'0.20',clientMutationId:key}})).status()).toBe(500);
+      expect((await db.query('select balance from customers where id=$1',[customer])).rows[0].balance).toBe('0.50');
+      expect((await db.query('select 1 from payments where client_mutation_id=$1',[key])).rowCount).toBe(0);
+      expect((await db.query('select 1 from processed_mutations where client_mutation_id=$1',[key])).rowCount).toBe(0);
+    } finally {await db.query('drop trigger allocation_test_fail on payment_allocations;drop function allocation_test_fail()');}
   });
 
 });

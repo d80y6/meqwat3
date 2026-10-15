@@ -22,12 +22,14 @@ class DebtsRefreshRequested extends DebtsEvent {
 }
 
 class DebtPaymentSubmitted extends DebtsEvent {
-  const DebtPaymentSubmitted({required this.kind, required this.partyId, required this.amount, required this.label, this.saved});
+  const DebtPaymentSubmitted({required this.kind, required this.partyId, required this.amount, required this.label, this.saved,this.allocationMode,this.allocations});
   final String kind;
   final String partyId;
   final String amount;
   final String label;
   final Completer<bool>? saved;
+  final String? allocationMode;
+  final List<Map<String,dynamic>>? allocations;
   @override
   List<Object?> get props => [kind, partyId, amount, label];
 }
@@ -107,6 +109,7 @@ class DebtsBloc extends Bloc<DebtsEvent, DebtsState> {
       supplierId: event.kind == 'supplier_payment' ? event.partyId : null,
       amount: event.amount,
       label: event.label,
+      allocationMode:event.allocationMode,allocations:event.allocations,
     );
     queued=true;
     event.saved?.complete(true);

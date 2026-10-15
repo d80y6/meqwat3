@@ -59,7 +59,7 @@ const mutate = async <T = unknown>(path: string, body?: unknown, method = "POST"
   const send = (clientMutationId: string) => api<T>(path, { method, body: JSON.stringify({ ...payload, clientMutationId }) });
   // POS/purchases already persist their own outbox ID before calling transport.
   if (typeof payload.clientMutationId === "string") return send(payload.clientMutationId);
-  const financial = path.startsWith("/api/admin/") || /^\/api\/(payments|expenses|inventory)$/.test(path) || /^\/api\/(sales|purchases)\/[^/]+\/return$/.test(path);
+  const financial = path.startsWith("/api/admin/") || /^\/api\/payments\/[^/]+\/(reverse|allocate)$/.test(path) || /^\/api\/(payments|expenses|inventory)$/.test(path) || /^\/api\/(sales|purchases)\/[^/]+\/return$/.test(path);
   if (!financial || typeof window === "undefined") return send(newMutationId());
   const { user } = await apiGet<{user:{id:string;tenantId:string}}>("/api/auth/me");
   if (!crypto.subtle) throw new ClientError("يلزم اتصال آمن لحفظ العملية", 400);

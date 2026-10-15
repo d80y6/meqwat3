@@ -30,6 +30,7 @@ class DebtsRepository {
     String? supplierId,
     required String amount,
     required String label,
+    String? allocationMode,List<Map<String,dynamic>>? allocations,
   }) async {
     if(Money.cents(amount)<=0)throw const FormatException('المبلغ يجب أن يكون موجباً');
     final mutationId = _uuid.v4();
@@ -38,6 +39,8 @@ class DebtsRepository {
       'type': 'payment',
       'payload': jsonEncode({
         'kind': kind,
+        if(allocationMode!=null)'allocationMode':allocationMode,
+        if(allocations!=null)'allocations':allocations,
         'customerId': customerId,
         'supplierId': supplierId,
         'amount': amount,

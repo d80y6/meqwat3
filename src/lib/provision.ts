@@ -1,10 +1,10 @@
 import { randomBytes } from "crypto";
-import { db } from "@/db";
-import { tenants, subscriptions, plans, users, cashRegisters, subscriptionRequests } from "@/db/schema";
-import { desc, eq } from "drizzle-orm";
+import { authDb as db } from "@/db";
+import { tenants, subscriptions, plans, users, cashRegisters, subscriptionRequests, auditLogs, products } from "@/db/schema";
+import { desc, eq, sql, and, count } from "drizzle-orm";
 import { hashPassword } from "./auth";
 import { ApiError } from "./api";
-import { withTenantTx } from "./tx";
+import type { Tx } from "./tx";
 
 function slugify(name: string): string {
   const base = name
@@ -31,20 +31,21 @@ export interface ProvisionInput {
  * account (with a one-time generated password), and a default cash register.
  * Used by platform admins directly and when approving subscription requests.
  */
-export async function provisionTenant(input: ProvisionInput) {
+export async function provisionTenant(input: ProvisionInput, connection: typeof db | Tx = db) {
+  input = { ...input, email: input.email.trim().toLowerCase() };
   if (!input.businessName.trim() || !input.ownerName.trim() || !input.email.trim()) {
     throw new ApiError("بيانات المتجر والمالك والبريد مطلوبة");
   }
-  const [existing] = await db.select({ id: users.id }).from(users).where(eq(users.email, input.email)).limit(1);
+  const [existing] = await connection.select({ id: users.id }).from(users).where(eq(users.email, input.email)).limit(1);
   if (existing) throw new ApiError("البريد الإلكتروني مستخدم لحساب آخر");
 
   let plan = null as typeof plans.$inferSelect | null;
   if (input.planId) {
-    const [p] = await db.select().from(plans).where(eq(plans.id, input.planId)).limit(1);
-    if (!p) throw new ApiError("الباقة غير موجودة");
+    const [p] = await connection.select().from(plans).where(eq(plans.id, input.planId)).limit(1);
+    if (!p?.isActive) throw new ApiError("الباقة غير موجودة أو غير مفعّلة");
     plan = p;
   } else {
-    const [p] = await db.select().from(plans).where(eq(plans.isActive, true)).orderBy(plans.priceMonthly).limit(1);
+    const [p] = await connection.select().from(plans).where(eq(plans.isActive, true)).orderBy(plans.priceMonthly).limit(1);
     plan = p ?? null;
   }
   if (!plan) throw new ApiError("لا توجد باقات مفعّلة في المنصة");
@@ -54,7 +55,7 @@ export async function provisionTenant(input: ProvisionInput) {
   const trialDays = input.trialDays ?? 14;
   const endsAt = new Date(Date.now() + trialDays * 86400_000);
 
-  const tenant = await db.transaction(async (tx) => {
+  const tenant = await connection.transaction(async (tx) => {
     const [t] = await tx
       .insert(tenants)
       .values({
@@ -73,7 +74,7 @@ export async function provisionTenant(input: ProvisionInput) {
       .insert(users)
       .values({
         tenantId: t.id, name: input.ownerName.trim(), email: input.email,
-        phone: input.phone, passwordHash, role: "tenant_owner",
+        phone: input.phone, passwordHash, role: "tenant_owner", mustChangePassword: true,
       })
       .returning();
     await tx.insert(cashRegisters).values({ tenantId: t.id, name: "الصندوق الرئيسي" });
@@ -108,32 +109,39 @@ export interface ApproveResult {
  *   it for 30 days — never provision a duplicate tenant.
  */
 export async function approveRequest(requestId: string, reviewerId: string): Promise<ApproveResult> {
-  const [request] = await db
+  return db.transaction(async tx => {
+  const [request] = await tx
     .select()
     .from(subscriptionRequests)
     .where(eq(subscriptionRequests.id, requestId))
+    .for("update")
     .limit(1);
   if (!request) throw new ApiError("الطلب غير موجود", 404);
   if (request.status !== "pending") throw new ApiError("تمت مراجعة هذا الطلب مسبقاً");
 
   if (request.tenantId) {
-    const [tenant] = await db.select().from(tenants).where(eq(tenants.id, request.tenantId)).limit(1);
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${request.tenantId},0))`);
+    const [tenant] = await tx.select().from(tenants).where(eq(tenants.id, request.tenantId)).limit(1);
     if (!tenant) throw new ApiError("المتجر المرتبط بالطلب غير موجود", 404);
-    const [latest] = await db
+    const [latest] = await tx
       .select()
       .from(subscriptions)
       .where(eq(subscriptions.tenantId, tenant.id))
       .orderBy(desc(subscriptions.createdAt))
+      .for("update")
       .limit(1);
     if (!latest) throw new ApiError("لا يوجد اشتراك حالي لهذا المتجر");
     let planName = "";
     if (request.planId) {
-      const [plan] = await db.select().from(plans).where(eq(plans.id, request.planId)).limit(1);
-      if (!plan) throw new ApiError("الباقة المطلوبة غير موجودة");
+      const [plan] = await tx.select().from(plans).where(eq(plans.id, request.planId)).limit(1);
+      if (!plan?.isActive) throw new ApiError("الباقة المطلوبة غير موجودة أو غير مفعّلة");
+      const [members]=await tx.select({n:count()}).from(users).where(and(eq(users.tenantId,tenant.id),eq(users.isActive,true)));
+      const [catalog]=await tx.select({n:count()}).from(products).where(eq(products.tenantId,tenant.id));
+      if(members.n>plan.maxUsers||catalog.n>plan.maxProducts)throw new ApiError('الاستخدام الحالي يتجاوز حدود الباقة المطلوبة',409);
       planName = plan.name;
     }
     const base = latest.endsAt && latest.endsAt > new Date() ? latest.endsAt : new Date();
-    await db.transaction(async (tx) => {
+    await tx.transaction(async (tx) => {
       await tx
         .update(subscriptions)
         .set({
@@ -148,9 +156,10 @@ export async function approveRequest(requestId: string, reviewerId: string): Pro
         .where(eq(subscriptionRequests.id, requestId));
     });
     if (!planName) {
-      const [plan] = await db.select().from(plans).where(eq(plans.id, latest.planId)).limit(1);
+      const [plan] = await tx.select().from(plans).where(eq(plans.id, latest.planId)).limit(1);
       planName = plan?.name ?? "";
     }
+    await tx.insert(auditLogs).values({userId:reviewerId,tenantId:tenant.id,action:"admin.request.approve",entityType:"subscription_request",entityId:requestId});
     const trialEndsAt = new Date(base.getTime() + 30 * 86400_000);
     return { tenant, ownerEmail: request.email, ownerName: request.ownerName, tempPassword: null, upgraded: true, planName, trialEndsAt };
   }
@@ -162,13 +171,14 @@ export async function approveRequest(requestId: string, reviewerId: string): Pro
     phone: request.phone,
     city: request.city ?? undefined,
     planId: request.planId ?? undefined,
-  });
-  await withTenantTx({ tenantId: null }, async (tx) => {
+  }, tx);
+  await tx.transaction(async (tx) => {
     await tx
       .update(subscriptionRequests)
       .set({ status: "approved", tenantId: result.tenant.id, reviewedBy: reviewerId, reviewedAt: new Date() })
       .where(eq(subscriptionRequests.id, requestId));
   });
+  await tx.insert(auditLogs).values({userId:reviewerId,tenantId:result.tenant.id,action:"admin.request.approve",entityType:"subscription_request",entityId:requestId});
   return {
     tenant: result.tenant,
     ownerEmail: result.owner.email,
@@ -178,4 +188,5 @@ export async function approveRequest(requestId: string, reviewerId: string): Pro
     planName: result.plan.name,
     trialEndsAt: result.trialEndsAt,
   };
+  });
 }

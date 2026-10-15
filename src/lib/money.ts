@@ -8,24 +8,40 @@
 
 export type MoneyInput = string | number | null | undefined;
 
-/** Parse a decimal string/number into integer minor units (cents). */
-export function toCents(value: MoneyInput): number {
+/** Strict decimal parser. Never silently reinterpret NaN, exponent or junk input. */
+function scaled(value: MoneyInput, scale: number, max: bigint): number {
   if (value === null || value === undefined || value === "") return 0;
+  if (typeof value !== "string" && typeof value !== "number") throw new RangeError("Invalid decimal");
   const s = String(value).trim();
-  const neg = s.startsWith("-");
-  const clean = s.replace(/[^0-9.]/g, "");
-  const [intPart, fracPart = ""] = clean.split(".");
-  const cents =
-    parseInt(intPart || "0", 10) * 100 +
-    parseInt((fracPart + "00").slice(0, 2) || "0", 10) +
-    (fracPart.length > 2 && parseInt(fracPart[2], 10) >= 5 ? 1 : 0);
-  return neg ? -cents : cents;
+  if (!/^-?\d+(?:\.\d+)?$/.test(s) || s.length > 40) throw new RangeError("Invalid decimal");
+  const negative = s.startsWith("-");
+  const [whole, rawFraction = ""] = s.replace(/^-/, "").split(".");
+  const frac = rawFraction.replace(/0+$/, "");
+  if (frac.length > scale) throw new RangeError("Excess decimal precision");
+  const n = BigInt(whole) * (10n ** BigInt(scale)) + BigInt(frac.padEnd(scale, "0"));
+  if (n > max) throw new RangeError("Decimal outside database range");
+  return Number(negative ? -n : n);
+}
+
+export function toCents(value: MoneyInput): number {
+  return scaled(value, 2, 99999999999999n);
+}
+
+/** Exact half-away-from-zero division; intermediates cannot overflow JS doubles. */
+export function roundRatio(numerator: bigint, denominator: bigint): number {
+  if (denominator <= 0n) throw new RangeError("Invalid denominator");
+  const negative = numerator < 0n;
+  const n = negative ? -numerator : numerator;
+  const result = (n + denominator / 2n) / denominator;
+  if (result > BigInt(Number.MAX_SAFE_INTEGER)) throw new RangeError("Unsafe integer");
+  return Number(negative ? -result : result);
 }
 
 /** Convert integer minor units back to a canonical "1234.50" string. */
 export function fromCents(cents: number): string {
+  if (!Number.isSafeInteger(cents) || Math.abs(cents) > 99999999999999) throw new RangeError("Money outside database range");
   const neg = cents < 0;
-  const abs = Math.abs(Math.round(cents));
+  const abs = Math.abs(cents);
   const intPart = Math.floor(abs / 100);
   const frac = String(abs % 100).padStart(2, "0");
   return `${neg ? "-" : ""}${intPart}.${frac}`;
@@ -42,28 +58,17 @@ export const cmpMoney = (a: MoneyInput, b: MoneyInput): number =>
 export function mulQtyPrice(qtyStr: string | number, price: MoneyInput): string {
   const milliQty = toMilliQty(qtyStr);
   const cents = toCents(price);
-  // milliQty * cents / 1000, rounded half-up to nearest cent.
-  const product = milliQty * cents;
-  const rounded = Math.floor((Math.abs(product) + 500) / 1000) * Math.sign(product || 1);
-  return fromCents(product === 0 ? 0 : rounded);
+  return fromCents(roundRatio(BigInt(milliQty) * BigInt(cents), 1000n));
 }
 
-/** Parse quantity string into integer milli-units. */
-export function toMilliQty(value: string | number | null | undefined): number {
-  if (value === null || value === undefined || value === "") return 0;
-  const s = String(value).trim();
-  const neg = s.startsWith("-");
-  const clean = s.replace(/[^0-9.]/g, "");
-  const [intPart, fracPart = ""] = clean.split(".");
-  const milli =
-    parseInt(intPart || "0", 10) * 1000 +
-    parseInt((fracPart + "000").slice(0, 3) || "0", 10);
-  return neg ? -milli : milli;
+export function toMilliQty(value: MoneyInput): number {
+  return scaled(value, 3, 999999999999n);
 }
 
 export function fromMilliQty(milli: number): string {
+  if (!Number.isSafeInteger(milli) || Math.abs(milli) > 999999999999) throw new RangeError("Quantity outside database range");
   const neg = milli < 0;
-  const abs = Math.abs(Math.round(milli));
+  const abs = Math.abs(milli);
   const intPart = Math.floor(abs / 1000);
   const frac = String(abs % 1000).padStart(3, "0").replace(/0+$/, "");
   return `${neg ? "-" : ""}${intPart}${frac ? "." + frac : ""}`;
@@ -97,7 +102,5 @@ export function fmtQty(value: string | number | null | undefined): string {
 /** Validate a user-entered amount: must be a finite, non-negative decimal. */
 export function isValidAmount(value: unknown, { allowZero = true } = {}): boolean {
   if (value === null || value === undefined || value === "") return false;
-  const n = Number(value);
-  if (!Number.isFinite(n)) return false;
-  return allowZero ? n >= 0 : n > 0;
+  try { const n = toCents(value as MoneyInput); return allowZero ? n >= 0 : n > 0; } catch { return false; }
 }

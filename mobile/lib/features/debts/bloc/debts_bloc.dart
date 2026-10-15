@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:equatable/equatable.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
@@ -21,11 +22,14 @@ class DebtsRefreshRequested extends DebtsEvent {
 }
 
 class DebtPaymentSubmitted extends DebtsEvent {
-  const DebtPaymentSubmitted({required this.kind, required this.partyId, required this.amount, required this.label});
+  const DebtPaymentSubmitted({required this.kind, required this.partyId, required this.amount, required this.label, this.saved,this.allocationMode,this.allocations});
   final String kind;
   final String partyId;
   final String amount;
   final String label;
+  final Completer<bool>? saved;
+  final String? allocationMode;
+  final List<Map<String,dynamic>>? allocations;
   @override
   List<Object?> get props => [kind, partyId, amount, label];
 }
@@ -77,6 +81,7 @@ class DebtsBloc extends Bloc<DebtsEvent, DebtsState> {
 
   final DebtsRepository repository;
   final SyncRepository sync;
+  bool _saving=false;
 
   Future<void> _load(DebtsEvent event, Emitter<DebtsState> emit) async {
     try {
@@ -95,13 +100,19 @@ class DebtsBloc extends Bloc<DebtsEvent, DebtsState> {
   }
 
   Future<void> _onPayment(DebtPaymentSubmitted event, Emitter<DebtsState> emit) async {
+    if(_saving){event.saved?.complete(false);return;}_saving=true;
+    var queued=false;
+    try {
     await repository.queuePayment(
       kind: event.kind,
       customerId: event.kind == 'customer_payment' ? event.partyId : null,
       supplierId: event.kind == 'supplier_payment' ? event.partyId : null,
       amount: event.amount,
       label: event.label,
+      allocationMode:event.allocationMode,allocations:event.allocations,
     );
+    queued=true;
+    event.saved?.complete(true);
     emit(state.copyWith(pendingCount: await repository.pendingCount(), message: 'حُفظ السداد محلياً — سيُرحَّل عند الاتصال'));
     // Best-effort immediate sync; failures leave the op safely queued.
     try {
@@ -110,5 +121,7 @@ class DebtsBloc extends Bloc<DebtsEvent, DebtsState> {
     } catch (_) {
       emit(state.copyWith(pendingCount: await repository.pendingCount()));
     }
+    }catch(_){if(!(event.saved?.isCompleted??true))event.saved!.complete(false);emit(state.copyWith(message:queued?'حُفظ السداد، لكن تعذر تحديث العرض — راجع الطابور ولا تُدخله مجدداً':'تعذر حفظ السداد محلياً — لم يُرسل. أعد المحاولة بعد مراجعة الطابور'));}
+    finally{_saving=false;}
   }
 }

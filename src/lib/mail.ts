@@ -47,7 +47,7 @@ export const isEmailConfigured = isMailConfigured;
 async function send(to: string, subject: string, text: string, html?: string): Promise<MailResult> {
   const tx = transporter();
   if (!tx) {
-    console.log(`[mail] SMTP not configured — would send to ${to}: ${subject}`);
+    console.log("[mail] SMTP not configured; delivery not attempted");
     return { sent: false, via: "log-only", reason: "SMTP_NOT_CONFIGURED" };
   }
   try {
@@ -59,8 +59,8 @@ async function send(to: string, subject: string, text: string, html?: string): P
       html,
     });
     return { sent: true, via: "smtp" };
-  } catch (err) {
-    console.error("[mail] send failed:", err instanceof Error ? err.message : err);
+  } catch {
+    console.error("[mail] SMTP delivery failed");
     return { sent: false, via: "error", reason: "SMTP_SEND_FAILED" };
   }
 }
@@ -73,7 +73,7 @@ export async function sendOwnerCredentials(input: {
   tempPassword: string;
   planName?: string;
 }): Promise<MailResult> {
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "https://app.meqwat.example";
+  const appUrl = process.env.APP_ORIGIN ?? process.env.NEXT_PUBLIC_APP_URL ?? "";
   const displayName = input.ownerName ?? "مالك المتجر";
   const planLine = input.planName ? `الباقة: ${input.planName}\n` : "";
   return send(
@@ -122,4 +122,12 @@ export async function sendNotification(input: {
   body: string;
 }): Promise<MailResult> {
   return send(input.to, input.subject, input.body);
+}
+
+export async function sendPasswordReset(to: string, token: string): Promise<MailResult> {
+  // Never build password-reset links from caller-controlled Host headers.
+  const origin = process.env.APP_ORIGIN;
+  if (!origin || !origin.startsWith("https://")) return { sent:false, via:"error", reason:"APP_ORIGIN_REQUIRED" };
+  return send(to, "استعادة كلمة المرور — مقوات",
+    `افتح الرابط خلال ٣٠ دقيقة لتغيير كلمة المرور:\n${origin}/reset-password?token=${encodeURIComponent(token)}\nإذا لم تطلب ذلك، تجاهل الرسالة.`);
 }

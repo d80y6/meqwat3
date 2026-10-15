@@ -10,12 +10,13 @@ export const GET = handler(async (req: Request) => {
   const { limit, offset, search } = parsePagination(req);
   const url = new URL(req.url);
   const withDebt = url.searchParams.get("debt") === "1";
-  const conds = [eq(customers.tenantId, user.tenantId), eq(customers.isActive, true)];
+  const conds = [eq(customers.tenantId, user.tenantId)];
+  if (!withDebt) conds.push(eq(customers.isActive, true));
   if (search) conds.push(ilike(customers.name, `%${escapeIlike(search)}%`));
   if (withDebt) conds.push(gt(customers.balance, "0"));
   const where = and(...conds);
   const [rows, total] = await Promise.all([
-    db.select().from(customers).where(where).orderBy(desc(customers.balance)).limit(limit).offset(offset),
+    db.select().from(customers).where(where).orderBy(desc(customers.balance), customers.id).limit(limit).offset(offset),
     db.select({ c: count() }).from(customers).where(where),
   ]);
   return ok({ items: rows, total: total[0]?.c ?? 0 });

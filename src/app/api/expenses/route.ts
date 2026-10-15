@@ -1,7 +1,7 @@
 import { db } from "@/db";
 import { financialTransactions } from "@/db/schema";
 import { and, eq, desc, count, gte, lte } from "drizzle-orm";
-import { ok, handler, requireTenantUser, parsePagination, audit, ApiError } from "@/lib/api";
+import { requireMutationId, ok, handler, requireTenantUser, parsePagination, audit, ApiError } from "@/lib/api";
 import { assertTenantWritable, createExpense } from "@/lib/services";
 
 export const dynamic = "force-dynamic";
@@ -29,6 +29,7 @@ export const POST = handler(async (req: Request) => {
   const user = await requireTenantUser("cash:manage");
   await assertTenantWritable(user.tenantId);
   const body = await req.json();
+  requireMutationId(body);
   if (!body?.amount || !body?.description) throw new ApiError("مبلغ ووصف المصروف مطلوبان");
   const result = await createExpense(
     { tenantId: user.tenantId, userId: user.id, role: user.role },

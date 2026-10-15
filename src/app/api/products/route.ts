@@ -1,6 +1,6 @@
 import { db } from "@/db";
 import { products, inventoryMovements } from "@/db/schema";
-import { and, eq, ilike, desc, count } from "drizzle-orm";
+import { and, eq, ilike, desc, count, sql } from "drizzle-orm";
 import { ok, handler, requireTenantUser, parsePagination, escapeIlike, audit, ApiError } from "@/lib/api";
 import { getTenantPlan, withTenantTx } from "@/lib/services";
 import { toCents, toMilliQty, fromMilliQty } from "@/lib/money";
@@ -16,7 +16,7 @@ export const GET = handler(async (req: Request) => {
   if (search) conds.push(ilike(products.name, `%${escapeIlike(search)}%`));
   if (activeOnly) conds.push(eq(products.isActive, true));
   const [rows, total] = await Promise.all([
-    db.select().from(products).where(and(...conds)).orderBy(desc(products.createdAt)).limit(limit).offset(offset),
+    db.select().from(products).where(and(...conds)).orderBy(desc(products.createdAt), products.id).limit(limit).offset(offset),
     db.select({ c: count() }).from(products).where(and(...conds)),
   ]);
   return ok({ items: rows, total: total[0]?.c ?? 0 });
@@ -30,7 +30,8 @@ export const POST = handler(async (req: Request) => {
   if (toCents(body?.salePrice) < 0 || toCents(body?.costPrice) < 0) throw new ApiError("الأسعار غير صالحة");
 
   const created = await withTenantTx(user, async (tx) => {
-    const plan = await getTenantPlan(user.tenantId);
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${user.tenantId},0))`);
+    const plan = await getTenantPlan(user.tenantId,tx);
     if (plan) {
       const [c] = await tx.select({ c: count() }).from(products).where(eq(products.tenantId, user.tenantId));
       if ((c?.c ?? 0) >= plan.maxProducts) throw new ApiError(`وصلت إلى حد الأصناف في باقتك (${plan.maxProducts})`);

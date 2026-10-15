@@ -6,16 +6,17 @@ import { ok, handler, requireTenantUser, parsePagination, escapeIlike, audit, Ap
 export const dynamic = "force-dynamic";
 
 export const GET = handler(async (req: Request) => {
-  const user = await requireTenantUser();
+  const user = await requireTenantUser("suppliers:manage");
   const { limit, offset, search } = parsePagination(req);
   const url = new URL(req.url);
   const withLiability = url.searchParams.get("debt") === "1";
-  const conds = [eq(suppliers.tenantId, user.tenantId), eq(suppliers.isActive, true)];
+  const conds = [eq(suppliers.tenantId, user.tenantId)];
+  if (!withLiability) conds.push(eq(suppliers.isActive, true));
   if (search) conds.push(ilike(suppliers.name, `%${escapeIlike(search)}%`));
   if (withLiability) conds.push(gt(suppliers.balance, "0"));
   const where = and(...conds);
   const [rows, total] = await Promise.all([
-    db.select().from(suppliers).where(where).orderBy(desc(suppliers.balance)).limit(limit).offset(offset),
+    db.select().from(suppliers).where(where).orderBy(desc(suppliers.balance), suppliers.id).limit(limit).offset(offset),
     db.select({ c: count() }).from(suppliers).where(where),
   ]);
   return ok({ items: rows, total: total[0]?.c ?? 0 });

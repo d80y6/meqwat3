@@ -21,11 +21,23 @@ class SyncRepository {
   final ApiClient api;
   final AppDatabase db;
 
-  Future<SyncOutcome> syncNow() async {
+  Future<SyncOutcome>? _running;
+  Future<SyncOutcome> syncNow() {
+    return _running ??= _syncBatch().whenComplete(() => _running=null);
+  }
+  Future<SyncOutcome> _syncBatch() async {
+    final owner = db.ownerKey;
+    if (owner == null) throw StateError('Login required');
+    final me = await api.get('/api/auth/me');
+    final user = me['user'] as Map<String, dynamic>;
+    api.offlineSession=false;
+    await api.vault?.verifiedIdentity(me);
+    if (owner != "${user['tenantId']}:${user['id']}") throw StateError('Queue owner mismatch');
     final ops = await db.pendingOutbox();
     if (ops.isEmpty) return const SyncOutcome();
 
     final data = await api.post('/api/sync', {
+      'tenantId': db.tenantId, 'userId': db.userId,
       'operations': ops.map((o) => {
             'clientMutationId': o['client_mutation_id'],
             'type': o['type'],
@@ -33,27 +45,15 @@ class SyncRepository {
           }).toList(),
     });
 
+    if (db.ownerKey != owner) throw StateError('Session changed during sync');
     var applied = 0, duplicates = 0, conflicts = 0, failed = 0;
     final results = (data['results'] as List).cast<Map<String, dynamic>>();
     for (final r in results) {
       final id = r['clientMutationId'] as String;
       final status = r['status'] as String?;
-      if (status == 'applied') {
-        applied++;
-        await db.deleteOutbox(id);
-        final result = (r['result'] as Map<String, dynamic>?);
-        if (result != null && result['invoiceNo'] != null) {
-          await db.recordConfirmed({
-            'id': result['id'],
-            'invoice_no': result['invoiceNo'],
-            'total': result['totalAmount'],
-            'origin_mutation_id': id,
-            'confirmed_at': DateTime.now().toIso8601String(),
-          });
-        }
-      } else if (status == 'duplicate') {
-        duplicates++;
-        await db.deleteOutbox(id);
+      if (status == 'applied' || status == 'duplicate') {
+        await db.confirmOutbox(id,r['result'] as Map<String,dynamic>?);
+        if(status=='applied'){applied++;}else{duplicates++;}
       } else if (status == 'conflict') {
         conflicts++;
         await db.markOutbox(id, 'conflict', r['error']?.toString());

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Plus, Search, Pencil, Power, PackagePlus } from "lucide-react";
-import { apiGet, apiPost, apiPatch, apiDelete } from "@/lib/client";
+import { apiCollection, apiPost, apiPatch, apiDelete } from "@/lib/client";
 import { fmtMoney, fmtQty } from "@/lib/money";
 import { Btn, Field, Input, Modal, PageHeader, TableShell, Badge, EmptyState, Loading, useToast } from "@/components/ui";
 
@@ -29,7 +29,7 @@ export default function ProductsPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const d = await apiGet<{ items: Product[]; total: number }>(`/api/products?limit=100&search=${encodeURIComponent(search)}`);
+      const d = await apiCollection<Product>(`/api/products?limit=100&search=${encodeURIComponent(search)}`);
       setItems(d.items);
       setTotal(d.total);
     } catch (e) {
@@ -39,7 +39,7 @@ export default function ProductsPage() {
     }
   }, [search, toast]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { const timer = setTimeout(() => void load(), 0); return () => clearTimeout(timer); }, [load]);
 
   function openCreate() {
     setEditing(null);

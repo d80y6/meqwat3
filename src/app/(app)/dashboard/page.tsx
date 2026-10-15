@@ -74,7 +74,7 @@ export default function DashboardPage() {
                   <XAxis dataKey="day" tick={{ fontSize: 12 }} />
                   <YAxis tick={{ fontSize: 12 }} tickFormatter={(v: number) => v.toLocaleString("en-US")} />
                   <Tooltip formatter={(v) => [`${Number(v).toLocaleString("en-US")} ر.ي`, "المبيعات"]} />
-                  <Bar dataKey="total" fill="#346b31" radius={[6, 6, 0, 0]} />
+                  <Bar isAnimationActive={false} dataKey="total" fill="#346b31" radius={[6, 6, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>

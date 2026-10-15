@@ -2,8 +2,8 @@
 
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { ChevronDown, ChevronLeft, RotateCcw, Printer } from "lucide-react";
-import { apiGet, apiPost } from "@/lib/client";
-import { fmtMoney, fmtQty } from "@/lib/money";
+import { apiCollection, apiPost } from "@/lib/client";
+import { subMoney, fmtMoney, fmtQty } from "@/lib/money";
 import { Btn, Field, Input, Select, Modal, PageHeader, TableShell, Badge, EmptyState, Loading, useToast } from "@/components/ui";
 
 interface SaleItemRow { id: string; productName: string; unit: string; qty: string; returnedQty: string; unitPrice: string; total: string }
@@ -35,12 +35,12 @@ export default function SalesPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const d = await apiGet<{ items: Sale[] }>("/api/sales?limit=50");
+      const d = await apiCollection<Sale>("/api/sales?limit=50");
       setItems(d.items);
     } catch (e) { toast.push("error", e instanceof Error ? e.message : "تعذر التحميل"); }
     finally { setLoading(false); }
   }, [toast]);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { const timer = setTimeout(() => void load(), 0); return () => clearTimeout(timer); }, [load]);
 
   function openReturn(sale: Sale) {
     setReturnFor(sale);
@@ -80,7 +80,7 @@ export default function SalesPage() {
                   <p className="text-xs text-slate-400">{new Date(s.saleDate).toLocaleString("ar-YE", { dateStyle: "medium", timeStyle: "short" })}{s.source !== "web" ? ` · ${s.source === "pos" ? "نقطة بيع" : "دون اتصال"}` : ""}</p>
                 </td>
                 <td className="px-4 py-3">{s.customerName ?? <span className="text-slate-400">نقدي</span>}</td>
-                <td className="px-4 py-3 tabnums font-semibold">{fmtMoney(Number(s.totalAmount) - Number(s.discount))}</td>
+                <td className="px-4 py-3 tabnums font-semibold">{fmtMoney(subMoney(s.totalAmount, s.discount))}</td>
                 <td className="px-4 py-3 tabnums text-leaf-700">{fmtMoney(s.paidAmount)}</td>
                 <td className="px-4 py-3 tabnums">{Number(s.creditAmount) > 0 ? fmtMoney(s.creditAmount) : "—"}</td>
                 <td className="px-4 py-3">{METHOD[s.paymentMethod] ?? s.paymentMethod}</td>

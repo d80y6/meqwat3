@@ -1,28 +1,31 @@
-import { db } from "@/db";
+import { authDb as db } from "@/db";
 import { users, tenants } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { createSession, verifyPassword, type AuthUser } from "@/lib/auth";
-import { ok, fail, audit } from "@/lib/api";
-import { checkRateLimit, clientIp } from "@/lib/rate-limit";
+import { ok, fail, audit, handler } from "@/lib/api";
+import { checkRateLimitAsync, clientIp } from "@/lib/rate-limit";
 import type { Role } from "@/lib/permissions";
 
 export const dynamic = "force-dynamic";
 
-export async function POST(req: Request) {
+export const POST = handler(async (req: Request) => {
   const body = await req.json().catch(() => null);
   const email = String(body?.email ?? "").trim().toLowerCase();
   const password = String(body?.password ?? "");
-  if (!email || !password) return fail("أدخل البريد الإلكتروني وكلمة المرور");
+  if (!email || !password || email.length > 160 || Buffer.byteLength(password, "utf8") > 72) return fail("أدخل البريد الإلكتروني وكلمة المرور");
 
   // Brute-force protection: 10 attempts / 10 min per IP+account pair.
-  const limit = checkRateLimit(`login:${clientIp(req)}:${email}`, 10, 10 * 60_000);
+  const limit = await checkRateLimitAsync(`login:${clientIp(req)}:${email}`, 10, 10 * 60_000);
   if (!limit.ok) {
     return fail(`محاولات كثيرة — حاول مجدداً بعد ${Math.ceil(limit.retryAfterSec / 60)} دقيقة`, 429, "RATE_LIMITED");
   }
 
   const [user] = await db.select().from(users).where(eq(users.email, email)).limit(1);
   // Constant-ish response for unknown users to avoid account enumeration.
-  if (!user || !(await verifyPassword(password, user.passwordHash))) {
+  // Compare even for unknown emails to avoid a cheap account-existence timing oracle.
+  const candidateHash = user?.passwordHash ?? "$2b$12$8PEeeAYOi9UlSv.sTcChp.1HD7h9KG5zFb35.lfKBBlMHQX/o8.WK";
+  const validPassword = await verifyPassword(password, candidateHash);
+  if (!user || !validPassword) {
     return fail("بيانات الدخول غير صحيحة", 401, "BAD_CREDENTIALS");
   }
   if (!user.isActive) return fail("هذا الحساب موقوف، تواصل مع الإدارة", 403, "USER_DISABLED");
@@ -33,23 +36,8 @@ export async function POST(req: Request) {
     if (!tenant) return fail("المتجر المرتبط بالحساب غير موجود", 403);
     if (tenant.status !== "active") return fail("اشتراك المتجر موقوف حالياً، تواصل مع إدارة المنصة", 403, "TENANT_SUSPENDED");
     tenantName = tenant.name;
-    // Subscription expiry also blocks login (mirrors assertTenantWritable for writes)
-    const { subscriptions } = await import("@/db/schema");
-    const { sql } = await import("drizzle-orm");
-    const [sub] = await db
-      .select({ status: subscriptions.status, endsAt: subscriptions.endsAt })
-      .from(subscriptions)
-      .where(eq(subscriptions.tenantId, tenant.id))
-      .orderBy(sql`${subscriptions.createdAt} desc`)
-      .limit(1);
-    if (sub) {
-      if (sub.status === "cancelled" || sub.status === "expired") {
-        return fail("انتهى اشتراك المتجر، جدّد الاشتراك للمتابعة", 403, "SUBSCRIPTION_EXPIRED");
-      }
-      if (sub.endsAt && sub.endsAt < new Date() && sub.status !== "trial") {
-        return fail("انتهى اشتراك المتجر، جدّد الاشتراك للمتابعة", 403, "SUBSCRIPTION_EXPIRED");
-      }
-    }
+    // Expired subscriptions remain read-only so owners can request renewal.
+
   }
 
   const authUser: AuthUser = {
@@ -59,4 +47,4 @@ export async function POST(req: Request) {
   await db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id));
   await audit(authUser, "auth.login", "user", user.id);
   return ok({ user: { ...authUser, tenantName } });
-}
+});

@@ -1,4 +1,4 @@
-import { ok, handler, requireTenantUser, audit, ApiError } from "@/lib/api";
+import { requireMutationId, ok, handler, requireTenantUser, audit, ApiError } from "@/lib/api";
 import { assertTenantWritable, returnPurchaseItems } from "@/lib/services";
 
 export const dynamic = "force-dynamic";
@@ -8,11 +8,13 @@ export const POST = handler(async (req: Request, { params }: { params: Promise<{
   await assertTenantWritable(user.tenantId);
   const { id } = await params;
   const body = await req.json();
+  requireMutationId(body);
   if (!Array.isArray(body?.items) || body.items.length === 0) throw new ApiError("اختر بنود الإرجاع");
   const result = await returnPurchaseItems(
     { tenantId: user.tenantId, userId: user.id, role: user.role },
     id,
     {
+      clientMutationId: body.clientMutationId,
       items: body.items.map((i: { purchaseItemId: string; qty: string | number }) => ({
         purchaseItemId: i.purchaseItemId,
         qty: i.qty,

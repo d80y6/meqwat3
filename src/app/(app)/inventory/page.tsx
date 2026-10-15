@@ -45,7 +45,7 @@ export default function InventoryPage() {
     } catch (e) { toast.push("error", e instanceof Error ? e.message : "تعذر التحميل"); }
     finally { setLoading(false); }
   }, [day, typeFilter, toast]);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { const timer = setTimeout(() => void load(), 0); return () => clearTimeout(timer); }, [load]);
 
   async function submitAction() {
     if (!action) return;

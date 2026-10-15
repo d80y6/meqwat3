@@ -1,12 +1,15 @@
+import { settlementInvoices, isReconciled, planAllocation, insertAllocations, type AllocationOptions } from "./payment-allocation";
+import { createHash } from "node:crypto";
+import { hasPermission, type Permission } from "./permissions";
 import { db } from "@/db";
 import {
   tenants, products, customers, suppliers, purchases, purchaseItems, sales, saleItems,
   payments, inventoryMovements, financialTransactions, shifts, cashRegisters,
-  processedMutations, tenantCounters, subscriptions, plans,
+  processedMutations, tenantCounters, subscriptions, plans, auditLogs, paymentAllocations,
 } from "@/db/schema";
 import { and, eq, sql } from "drizzle-orm";
 import { ApiError } from "./api";
-import { toCents, fromCents, mulQtyPrice, toMilliQty, fromMilliQty, addQty, subQty } from "./money";
+import { toCents, fromCents, mulQtyPrice, toMilliQty, fromMilliQty, addQty, subQty, roundRatio } from "./money";
 import { withTenantTx, type Tx } from "./tx";
 
 export { withTenantTx } from "./tx";
@@ -18,32 +21,58 @@ export interface Ctx {
   role: string;
 }
 
-async function replayIfProcessed(tx: Tx, tenantId: string, mutationId?: string | null) {
-  if (!mutationId) return null;
-  const [row] = await tx
-    .select()
-    .from(processedMutations)
-    .where(and(eq(processedMutations.tenantId, tenantId), eq(processedMutations.clientMutationId, mutationId)))
-    .limit(1);
-  return row ? (row.result as Record<string, unknown>) : null;
+/** Serialize postings per tenant. Conservative correctness-first locking also
+ * orders shifts, balances and stock consistently, avoiding lock-order deadlocks.
+ * Idempotency is tenant + actor + operation + canonical request, not just a key. */
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (value && typeof value === "object") return `{${Object.entries(value).filter(([k,v]) => v !== undefined && v !== null && k !== "source" && k !== "_queueOwner")
+    .sort(([a],[b]) => a.localeCompare(b)).map(([k,v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(",")}}`;
+  return JSON.stringify(value);
+}
+async function operation<T extends object>(ctx: Ctx, input: object,
+  permission: Permission, kind: string, fn: (tx: Tx) => Promise<T>): Promise<T & { duplicated?: boolean }> {
+  if (!hasPermission(ctx.role, permission)) throw new ApiError("ليست لديك صلاحية", 403, "FORBIDDEN");
+  const key = (input as { clientMutationId?: string | null }).clientMutationId;
+  if (key != null && (typeof key !== "string" || !/^[A-Za-z0-9_-]{8,80}$/.test(key))) throw new ApiError("معرّف العملية غير صالح");
+  const fingerprint = createHash("sha256").update(canonical({ actor: ctx.userId, kind, input })).digest("hex");
+  return withTenantTx(ctx, async tx => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${ctx.tenantId}, 0))`);
+    await assertTenantWritable(ctx.tenantId, tx);
+    if (key) {
+      const [prior] = await tx.select().from(processedMutations).where(and(
+        eq(processedMutations.tenantId, ctx.tenantId), eq(processedMutations.clientMutationId, key)));
+      if (prior) {
+        const stored = prior.result as { fingerprint?: string; value?: T };
+        if (stored.fingerprint !== fingerprint || !stored.value) throw new ApiError("معرّف العملية مستخدم لطلب مختلف", 409, "IDEMPOTENCY_CONFLICT");
+        return { ...stored.value, duplicated: true };
+      }
+    }
+    const result = await fn(tx);
+    if (key) await tx.insert(processedMutations).values({ tenantId: ctx.tenantId,
+      clientMutationId: key, entityType: kind, entityId: String((result as {id?: string}).id ?? ctx.tenantId),
+      result: { fingerprint, value: result } });
+    // Financial audit must commit or roll back with its posting.
+    await tx.insert(auditLogs).values({ tenantId: ctx.tenantId, userId: ctx.userId,
+      action: kind, entityType: kind, metadata: { mutationId: key ?? null, result } });
+    return result;
+  });
 }
 
-async function rememberProcessed(tx: Tx, tenantId: string, mutationId: string | null | undefined, entityType: string, entityId: string, result: object) {
-  if (!mutationId) return;
-  await tx.insert(processedMutations).values({ tenantId, clientMutationId: mutationId, entityType, entityId, result: result as Record<string, unknown> });
-}
-
-function isUniqueViolation(err: unknown): boolean {
-  const e = err as { code?: string; message?: string; cause?: { code?: string } };
-  return e?.code === "23505" || e?.cause?.code === "23505" || /duplicate key|unique/i.test(e?.message ?? "");
+async function lockShift(tx: Tx, ctx: Ctx, shiftId?: string | null) {
+  if (!shiftId) return null;
+  const [shift] = await tx.select().from(shifts).where(and(eq(shifts.id, shiftId), eq(shifts.tenantId, ctx.tenantId))).for("update").limit(1);
+  if (!shift || shift.status !== "open") throw new ApiError("الوردية غير مفتوحة", 409);
+  if (ctx.role === "cashier" && shift.userId !== ctx.userId) throw new ApiError("الوردية تخص مستخدماً آخر", 403);
+  return shift;
 }
 
 /** Subscription guard: suspended tenants and expired subscriptions cannot write. */
-export async function assertTenantWritable(tenantId: string): Promise<void> {
-  const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+export async function assertTenantWritable(tenantId: string, connection: typeof db | Tx = db): Promise<void> {
+  const [tenant] = await connection.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
   if (!tenant) throw new ApiError("المتجر غير موجود", 404);
   if (tenant.status !== "active") throw new ApiError("اشتراك المتجر موقوف، تواصل مع إدارة المنصة", 403, "TENANT_SUSPENDED");
-  const [sub] = await db
+  const [sub] = await connection
     .select({ status: subscriptions.status, endsAt: subscriptions.endsAt })
     .from(subscriptions)
     .where(eq(subscriptions.tenantId, tenantId))
@@ -52,7 +81,7 @@ export async function assertTenantWritable(tenantId: string): Promise<void> {
   if (sub && (sub.status === "cancelled" || sub.status === "expired")) {
     throw new ApiError("انتهى اشتراك المتجر، جدّد الاشتراك للمتابعة", 403, "SUBSCRIPTION_EXPIRED");
   }
-  if (sub?.endsAt && sub.endsAt < new Date() && sub.status !== "trial") {
+  if (sub?.endsAt && sub.endsAt < new Date()) {
     throw new ApiError("انتهى اشتراك المتجر، جدّد الاشتراك للمتابعة", 403, "SUBSCRIPTION_EXPIRED");
   }
 }
@@ -77,14 +106,12 @@ export interface SaleResult {
 }
 
 export async function createSale(ctx: Ctx, input: CreateSaleInput): Promise<SaleResult> {
-  if (!input.items?.length) throw new ApiError("أضف صنفاً واحداً على الأقل إلى الفاتورة");
-  try {
-    return await withTenantTx(ctx, async (tx) => {
-      const replay = await replayIfProcessed(tx, ctx.tenantId, input.clientMutationId);
-      if (replay) return { ...(replay as unknown as SaleResult), duplicated: true };
+  if (!Array.isArray(input.items) || !input.items.length || input.items.length > 200) throw new ApiError("أضف صنفاً واحداً على الأقل إلى الفاتورة");
+  return await operation(ctx, input, "pos:use", "sale.create", async (tx) => {
+    await lockShift(tx, ctx, input.shiftId);
 
       // Lock & validate products (tenant-scoped, prevents cross-tenant refs).
-      const productIds = [...new Set(input.items.map((i) => i.productId))];
+      const productIds = [...new Set(input.items.map((i) => i.productId))].sort();
       const lockedProducts = new Map<string, typeof products.$inferSelect>();
       for (const pid of productIds) {
         const [p] = await tx
@@ -120,7 +147,7 @@ export async function createSale(ctx: Ctx, input: CreateSaleInput): Promise<Sale
         if (toCents(unitPrice) < 0) throw new ApiError("سعر البيع غير صالح");
         const lineTotal = mulQtyPrice(item.qty, unitPrice);
         totalCents += toCents(lineTotal);
-        return { product: p, qty: String(item.qty), unitPrice, total: lineTotal };
+        return { product: p, qty: fromMilliQty(toMilliQty(item.qty)), unitPrice: fromCents(toCents(unitPrice)), total: lineTotal };
       });
       const discountCents = toCents(input.discount ?? 0);
       if (discountCents < 0 || discountCents > totalCents) throw new ApiError("قيمة الخصم غير صالحة");
@@ -140,7 +167,7 @@ export async function createSale(ctx: Ctx, input: CreateSaleInput): Promise<Sale
           .where(and(eq(customers.id, input.customerId), eq(customers.tenantId, ctx.tenantId)))
           .for("update")
           .limit(1);
-        if (!c) throw new ApiError("العميل غير موجود", 404);
+        if (!c || !c.isActive) throw new ApiError("العميل غير موجود أو موقوف", 404);
         customer = c;
       }
       if (creditCents > 0) {
@@ -151,13 +178,13 @@ export async function createSale(ctx: Ctx, input: CreateSaleInput): Promise<Sale
         }
       }
 
-      if (input.shiftId) {
-        const [shift] = await tx
-          .select()
-          .from(shifts)
-          .where(and(eq(shifts.id, input.shiftId), eq(shifts.tenantId, ctx.tenantId)))
-          .limit(1);
-        if (!shift || shift.status !== "open") throw new ApiError("الوردية غير مفتوحة");
+
+
+      if (input.registerId) {
+        const [register] = await tx.select().from(cashRegisters).where(and(eq(cashRegisters.id, input.registerId), eq(cashRegisters.tenantId, ctx.tenantId)));
+        if (!register) throw new ApiError("الصندوق غير موجود", 404);
+        const shift = await lockShift(tx, ctx, input.shiftId);
+        if (shift && shift.registerId !== register.id) throw new ApiError("الصندوق لا يطابق الوردية");
       }
 
       // Sequential invoice number per tenant (row locked by upsert).
@@ -229,24 +256,14 @@ export async function createSale(ctx: Ctx, input: CreateSaleInput): Promise<Sale
       }
 
       const result = { id: sale.id, invoiceNo, totalAmount: sale.totalAmount, paidAmount: sale.paidAmount, creditAmount: sale.creditAmount, paymentMethod, status: sale.status };
-      await rememberProcessed(tx, ctx.tenantId, input.clientMutationId, "sale", sale.id, result);
       return result;
     });
-  } catch (err) {
-    if (input.clientMutationId && isUniqueViolation(err)) {
-      const [row] = await db
-        .select()
-        .from(processedMutations)
-        .where(and(eq(processedMutations.tenantId, ctx.tenantId), eq(processedMutations.clientMutationId, input.clientMutationId)))
-        .limit(1);
-      if (row) return { ...(row.result as unknown as SaleResult), duplicated: true };
-    }
-    throw err;
-  }
+
 }
 
 /* ------------------------------- SALE RETURNS ------------------------------ */
 export interface ReturnInput {
+  clientMutationId?: string | null;
   items: { saleItemId: string; qty: string | number; restock: boolean }[];
   refundMethod: "cash" | "debt";
   shiftId?: string | null;
@@ -254,7 +271,8 @@ export interface ReturnInput {
 }
 
 export async function returnSaleItems(ctx: Ctx, saleId: string, input: ReturnInput) {
-  return withTenantTx(ctx, async (tx) => {
+  return operation(ctx, { ...input, saleId }, "sales:return", "sale.return", async (tx) => {
+    await lockShift(tx, ctx, input.shiftId);
     const [sale] = await tx
       .select()
       .from(sales)
@@ -263,8 +281,19 @@ export async function returnSaleItems(ctx: Ctx, saleId: string, input: ReturnInp
       .limit(1);
     if (!sale) throw new ApiError("الفاتورة غير موجودة", 404);
     if (sale.status === "returned" || sale.status === "reversed") throw new ApiError("الفاتورة مرتجعة بالكامل مسبقاً");
-    if (!input.items?.length) throw new ApiError("اختر صنفاً واحداً على الأقل للإرجاع");
+    if (!Array.isArray(input.items) || !input.items.length || input.items.length > 200) throw new ApiError("اختر صنفاً واحداً على الأقل للإرجاع");
 
+    if (!["cash", "debt"].includes(input.refundMethod)) throw new ApiError("طريقة الإرجاع غير صالحة");
+    const allLines = await tx.select().from(saleItems).where(eq(saleItems.saleId, sale.id)).orderBy(saleItems.id);
+    const grossCents = toCents(sale.totalAmount);
+    const netCents = grossCents - toCents(sale.discount);
+    const entitlements = new Map<string, number>();
+    let gross = 0, allocated = 0;
+    for (const line of allLines) {
+      gross += toCents(line.total);
+      const next = grossCents ? roundRatio(BigInt(gross) * BigInt(netCents), BigInt(grossCents)) : 0;
+      entitlements.set(line.id, next - allocated); allocated = next;
+    }
     let refundCents = 0;
     for (const item of input.items) {
       const [line] = await tx
@@ -277,7 +306,10 @@ export async function returnSaleItems(ctx: Ctx, saleId: string, input: ReturnInp
       const q = toMilliQty(item.qty);
       const remaining = toMilliQty(line.qty) - toMilliQty(line.returnedQty);
       if (q <= 0 || q > remaining) throw new ApiError("كمية الإرجاع أكبر من الكمية المباعة المتبقية");
-      refundCents += toCents(mulQtyPrice(item.qty, line.unitPrice));
+      const entitlement = entitlements.get(line.id)!;
+      const previous = toMilliQty(line.returnedQty);
+      refundCents += roundRatio(BigInt(previous + q) * BigInt(entitlement), BigInt(toMilliQty(line.qty)))
+        - roundRatio(BigInt(previous) * BigInt(entitlement), BigInt(toMilliQty(line.qty)));
       await tx.update(saleItems).set({ returnedQty: fromMilliQty(toMilliQty(line.returnedQty) + q) }).where(eq(saleItems.id, line.id));
 
       const [product] = await tx
@@ -296,32 +328,31 @@ export async function returnSaleItems(ctx: Ctx, saleId: string, input: ReturnInp
             userId: ctx.userId, notes: input.notes ?? "مرتجع بيع",
           });
         } else {
-          await tx.insert(inventoryMovements).values({
-            tenantId: ctx.tenantId, productId: product.id, type: "spoilage", qty: "0",
-            balanceAfter: product.stockQty, unitCost: product.costPrice, refType: "sale", refId: sale.id,
-            userId: ctx.userId, notes: `مرتجع تالف غير قابل للبيع (${item.qty} ${product.unit})`,
-          });
+          // Receive then spoil the returned goods: net stock zero, but the
+          // physical loss and its original cost remain visible in the ledger.
+          await tx.insert(inventoryMovements).values([
+            { tenantId: ctx.tenantId, productId: product.id, type: "sale_return", qty: fromMilliQty(q),
+              balanceAfter: addQty(product.stockQty, item.qty), unitCost: line.costPrice,
+              refType: "sale", refId: sale.id, userId: ctx.userId, notes: "استلام مرتجع تالف" },
+            { tenantId: ctx.tenantId, productId: product.id, type: "spoilage", qty: fromMilliQty(-q),
+              balanceAfter: product.stockQty, unitCost: line.costPrice,
+              refType: "sale", refId: sale.id, userId: ctx.userId, notes: "هالك مرتجع غير قابل للبيع" },
+          ]);
         }
       }
     }
 
-    // Apply proportional discount share to the refund.
-    const grossCents = toCents(sale.totalAmount);
-    const netCents = grossCents - toCents(sale.discount);
-    if (grossCents > 0 && toCents(sale.discount) > 0) {
-      refundCents = Math.round((refundCents * netCents) / grossCents);
-    }
-    if (refundCents <= 0) throw new ApiError("قيمة الإرجاع صفر");
-
+    const [settlement]=await settlementInvoices(tx,ctx.tenantId,"customer_payment",undefined,sale.id);
     if (input.refundMethod === "cash") {
+      if (refundCents > toCents(settlement.refundable)) throw new ApiError("الإرجاع النقدي أكبر من المدفوع؛ استخدم تخفيض الدين");
       await tx.insert(financialTransactions).values({
         tenantId: ctx.tenantId, type: "sale_refund", amount: fromCents(-refundCents),
-        refType: "sale", refId: sale.id, shiftId: input.shiftId ?? sale.shiftId, userId: ctx.userId,
+        refType: "sale", refId: sale.id, shiftId: input.shiftId ?? null, userId: ctx.userId,
         description: `مرتجع فاتورة #${sale.invoiceNo}`,
       });
       await tx.insert(payments).values({
         tenantId: ctx.tenantId, kind: "sale_refund", customerId: sale.customerId, saleId: sale.id,
-        shiftId: input.shiftId ?? sale.shiftId, userId: ctx.userId, amount: fromCents(refundCents), method: "cash",
+        shiftId: input.shiftId ?? null, userId: ctx.userId, amount: fromCents(refundCents), method: "cash",
       });
     } else {
       if (!sale.customerId) throw new ApiError("لا يمكن تخفيض دين لفاتورة بدون عميل");
@@ -332,12 +363,17 @@ export async function returnSaleItems(ctx: Ctx, saleId: string, input: ReturnInp
         .for("update")
         .limit(1);
       if (!customer) throw new ApiError("العميل غير موجود", 404);
-      const newBalance = Math.max(0, toCents(customer.balance) - refundCents);
+      if (refundCents > toCents(customer.balance) || refundCents > toCents(settlement.outstanding)) throw new ApiError("الإرجاع أكبر من الدين المتبقي؛ يلزم تسوية موثقة");
+      if(!isReconciled(await settlementInvoices(tx,ctx.tenantId,"customer_payment",customer.id),customer.balance))throw new ApiError("راجع التخصيصات التاريخية قبل تخفيض الدين",409,"RECONCILIATION_REQUIRED");
+      const newBalance = toCents(customer.balance) - refundCents;
+      await tx.insert(payments).values({ tenantId: ctx.tenantId, kind: "sale_debt_refund", saleId: sale.id,
+        customerId: customer.id, userId: ctx.userId, amount: fromCents(refundCents), method: "credit" });
       await tx.update(customers).set({ balance: fromCents(newBalance) }).where(eq(customers.id, customer.id));
     }
 
     const newReturned = toCents(sale.returnedAmount) + refundCents;
-    const fullyReturned = newReturned >= netCents;
+    const remainingLines = await tx.select().from(saleItems).where(eq(saleItems.saleId, sale.id));
+    const fullyReturned = remainingLines.every(l => toMilliQty(l.qty) === toMilliQty(l.returnedQty));
     await tx
       .update(sales)
       .set({ returnedAmount: fromCents(newReturned), status: fullyReturned ? "returned" : "partially_returned" })
@@ -362,11 +398,9 @@ export interface PurchaseResult {
 }
 
 export async function createPurchase(ctx: Ctx, input: CreatePurchaseInput): Promise<PurchaseResult> {
-  if (!input.items?.length) throw new ApiError("أضف صنفاً واحداً على الأقل إلى فاتورة الشراء");
-  try {
-    return await withTenantTx(ctx, async (tx) => {
-      const replay = await replayIfProcessed(tx, ctx.tenantId, input.clientMutationId);
-      if (replay) return { ...(replay as unknown as PurchaseResult), duplicated: true };
+  if (!Array.isArray(input.items) || !input.items.length || input.items.length > 200) throw new ApiError("أضف صنفاً واحداً على الأقل إلى فاتورة الشراء");
+  return await operation(ctx, input, "purchases:manage", "purchase.create", async (tx) => {
+    await lockShift(tx, ctx, input.shiftId);
 
       const [supplier] = await tx
         .select()
@@ -374,8 +408,9 @@ export async function createPurchase(ctx: Ctx, input: CreatePurchaseInput): Prom
         .where(and(eq(suppliers.id, input.supplierId), eq(suppliers.tenantId, ctx.tenantId)))
         .for("update")
         .limit(1);
-      if (!supplier) throw new ApiError("المورّد غير موجود", 404);
+      if (!supplier || !supplier.isActive) throw new ApiError("المورّد غير موجود أو موقوف", 404);
 
+      if (new Set(input.items.map(i => i.productId)).size !== input.items.length) throw new ApiError("ادمج بنود الصنف المكرر قبل الشراء");
       let totalCents = 0;
       const lines: { product: typeof products.$inferSelect; qty: string; unitCost: string; total: string }[] = [];
       for (const item of input.items) {
@@ -388,9 +423,10 @@ export async function createPurchase(ctx: Ctx, input: CreatePurchaseInput): Prom
         if (!p) throw new ApiError("أحد الأصناف غير موجود أو لا ينتمي لمتجرك", 404);
         if (toMilliQty(item.qty) <= 0) throw new ApiError("كمية الشراء يجب أن تكون أكبر من صفر");
         const unitCost = item.unitCost !== undefined && item.unitCost !== "" ? String(item.unitCost) : p.costPrice;
+        if (toCents(unitCost) < 0) throw new ApiError("تكلفة الشراء غير صالحة");
         const total = mulQtyPrice(item.qty, unitCost);
         totalCents += toCents(total);
-        lines.push({ product: p, qty: String(item.qty), unitCost, total });
+        lines.push({ product: p, qty: fromMilliQty(toMilliQty(item.qty)), unitCost: fromCents(toCents(unitCost)), total });
       }
       const paidCents = toCents(input.paidAmount ?? 0);
       if (paidCents < 0 || paidCents > totalCents) throw new ApiError("المبلغ المدفوع للمورّد أكبر من إجمالي الشراء");
@@ -419,9 +455,9 @@ export async function createPurchase(ctx: Ctx, input: CreatePurchaseInput): Prom
           let avgCost = line.product.costPrice;
           if (newQtyMilli > 0) {
             const totalCostCents =
-              Math.round((oldQtyMilli * toCents(line.product.costPrice)) / 1000) +
+              roundRatio(BigInt(oldQtyMilli) * BigInt(toCents(line.product.costPrice)), 1000n) +
               toCents(mulQtyPrice(line.qty, line.unitCost));
-            avgCost = fromCents(Math.round((totalCostCents * 1000) / newQtyMilli));
+            avgCost = fromCents(roundRatio(BigInt(totalCostCents) * 1000n, BigInt(newQtyMilli)));
           }
           await tx.update(products).set({ stockQty: newStock, costPrice: avgCost, updatedAt: new Date() }).where(eq(products.id, line.product.id));
           line.product.stockQty = newStock;
@@ -448,20 +484,9 @@ export async function createPurchase(ctx: Ctx, input: CreatePurchaseInput): Prom
       }
 
       const result: PurchaseResult = { id: purchase.id, totalAmount: fromCents(totalCents), paidAmount: fromCents(paidCents), liability: fromCents(liabilityCents) };
-      await rememberProcessed(tx, ctx.tenantId, input.clientMutationId, "purchase", purchase.id, result);
       return result;
     });
-  } catch (err) {
-    if (input.clientMutationId && isUniqueViolation(err)) {
-      const [row] = await db
-        .select()
-        .from(processedMutations)
-        .where(and(eq(processedMutations.tenantId, ctx.tenantId), eq(processedMutations.clientMutationId, input.clientMutationId)))
-        .limit(1);
-      if (row) return { ...(row.result as unknown as PurchaseResult), duplicated: true };
-    }
-    throw err;
-  }
+
 }
 
 /* --------------------------------- PAYMENTS -------------------------------- */
@@ -471,14 +496,14 @@ export interface PaymentResult {
 
 export async function recordPayment(
   ctx: Ctx,
-  input: { kind: "customer_payment" | "supplier_payment"; customerId?: string; supplierId?: string; amount: string | number; method?: string; shiftId?: string | null; notes?: string; clientMutationId?: string | null; source?: string },
+  input: AllocationOptions & { kind: "customer_payment" | "supplier_payment"; customerId?: string; supplierId?: string; amount: string | number; method?: string; shiftId?: string | null; notes?: string; clientMutationId?: string | null; source?: string },
 ): Promise<PaymentResult> {
   const amountCents = toCents(input.amount);
   if (amountCents <= 0) throw new ApiError("مبلغ السداد يجب أن يكون أكبر من صفر");
-  try {
-    return await withTenantTx(ctx, async (tx) => {
-      const replay = await replayIfProcessed(tx, ctx.tenantId, input.clientMutationId);
-      if (replay) return { ...(replay as unknown as PaymentResult), duplicated: true };
+  return await operation(ctx, input, "payments:manage", "payment.create", async (tx) => {
+    if (!["customer_payment", "supplier_payment"].includes(input.kind)) throw new ApiError("نوع السداد غير صالح");
+    if (!["cash", "transfer"].includes(input.method ?? "cash")) throw new ApiError("طريقة السداد غير صالحة");
+    await lockShift(tx, ctx, input.shiftId);
 
       let result: PaymentResult;
       if (input.kind === "customer_payment") {
@@ -491,6 +516,9 @@ export async function recordPayment(
           .limit(1);
         if (!customer) throw new ApiError("العميل غير موجود", 404);
         if (amountCents > toCents(customer.balance)) throw new ApiError("مبلغ السداد أكبر من دين العميل الحالي");
+        const invoices=await settlementInvoices(tx,ctx.tenantId,'customer_payment',customer.id);
+        if(!isReconciled(invoices,customer.balance))throw new ApiError('يلزم تسوية تخصيص المدفوعات التاريخية قبل السداد',409,'RECONCILIATION_REQUIRED');
+        const selected=planAllocation(invoices,input.amount,input);
         const newBalance = fromCents(toCents(customer.balance) - amountCents);
         await tx.update(customers).set({ balance: newBalance }).where(eq(customers.id, customer.id));
         const [payment] = await tx.insert(payments).values({
@@ -498,11 +526,12 @@ export async function recordPayment(
           amount: fromCents(amountCents), method: input.method ?? "cash", shiftId: input.shiftId ?? null,
           notes: input.notes ?? null, clientMutationId: input.clientMutationId ?? null, source: input.source ?? "web",
         }).returning();
-        await tx.insert(financialTransactions).values({
+        if ((input.method ?? "cash") === "cash") await tx.insert(financialTransactions).values({
           tenantId: ctx.tenantId, type: "customer_payment", amount: fromCents(amountCents),
           refType: "payment", refId: payment.id, shiftId: input.shiftId ?? null, userId: ctx.userId,
           description: `تحصيل دين من ${customer.name}`,
         });
+        await insertAllocations(tx,ctx.tenantId,payment.id,'customer_payment',selected);
         result = { id: payment.id, newBalance };
       } else {
         if (!input.supplierId) throw new ApiError("اختر المورّد");
@@ -514,6 +543,9 @@ export async function recordPayment(
           .limit(1);
         if (!supplier) throw new ApiError("المورّد غير موجود", 404);
         if (amountCents > toCents(supplier.balance)) throw new ApiError("مبلغ السداد أكبر من المستحق للمورّد");
+        const invoices=await settlementInvoices(tx,ctx.tenantId,'supplier_payment',supplier.id);
+        if(!isReconciled(invoices,supplier.balance))throw new ApiError('يلزم تسوية تخصيص المدفوعات التاريخية قبل السداد',409,'RECONCILIATION_REQUIRED');
+        const selected=planAllocation(invoices,input.amount,input);
         const newBalance = fromCents(toCents(supplier.balance) - amountCents);
         await tx.update(suppliers).set({ balance: newBalance }).where(eq(suppliers.id, supplier.id));
         const [payment] = await tx.insert(payments).values({
@@ -521,35 +553,26 @@ export async function recordPayment(
           amount: fromCents(amountCents), method: input.method ?? "cash", shiftId: input.shiftId ?? null,
           notes: input.notes ?? null, clientMutationId: input.clientMutationId ?? null, source: input.source ?? "web",
         }).returning();
-        await tx.insert(financialTransactions).values({
+        if ((input.method ?? "cash") === "cash") await tx.insert(financialTransactions).values({
           tenantId: ctx.tenantId, type: "supplier_payment", amount: fromCents(-amountCents),
           refType: "payment", refId: payment.id, shiftId: input.shiftId ?? null, userId: ctx.userId,
           description: `سداد للمورّد ${supplier.name}`,
         });
+        await insertAllocations(tx,ctx.tenantId,payment.id,'supplier_payment',selected);
         result = { id: payment.id, newBalance };
       }
-      await rememberProcessed(tx, ctx.tenantId, input.clientMutationId, "payment", String(result.id), result);
       return result;
     });
-  } catch (err) {
-    if (input.clientMutationId && isUniqueViolation(err)) {
-      const [row] = await db
-        .select()
-        .from(processedMutations)
-        .where(and(eq(processedMutations.tenantId, ctx.tenantId), eq(processedMutations.clientMutationId, input.clientMutationId)))
-        .limit(1);
-      if (row) return { ...(row.result as unknown as PaymentResult), duplicated: true };
-    }
-    throw err;
-  }
+
 }
 
 /* ------------------------------ STOCK ACTIONS ------------------------------ */
 export async function recordStockAction(
   ctx: Ctx,
-  input: { productId: string; type: "spoilage" | "adjustment"; qty: string | number; notes?: string },
+  input: { clientMutationId?: string | null; productId: string; type: "spoilage" | "adjustment"; qty: string | number; notes?: string },
 ) {
-  return withTenantTx(ctx, async (tx) => {
+  return operation(ctx, input, "inventory:manage", "stock.create", async (tx) => {
+    if (!["spoilage", "adjustment"].includes(input.type)) throw new ApiError("نوع حركة غير صالح");
     const [product] = await tx
       .select()
       .from(products)
@@ -592,19 +615,10 @@ export async function createExpense(
   const amountCents = toCents(input.amount);
   if (amountCents <= 0) throw new ApiError("مبلغ المصروف يجب أن يكون أكبر من صفر");
   if (!input.description?.trim()) throw new ApiError("وصف المصروف مطلوب");
-  try {
-    return await withTenantTx(ctx, async (tx) => {
-      const replay = await replayIfProcessed(tx, ctx.tenantId, input.clientMutationId);
-      if (replay) return { ...(replay as { id: string; amount: string }), duplicated: true } as { id: string; amount: string };
+  return await operation(ctx, input, "cash:manage", "expense.create", async (tx) => {
+    await lockShift(tx, ctx, input.shiftId);
 
-      if (input.shiftId) {
-        const [shift] = await tx
-          .select()
-          .from(shifts)
-          .where(and(eq(shifts.id, input.shiftId), eq(shifts.tenantId, ctx.tenantId)))
-          .limit(1);
-        if (!shift || shift.status !== "open") throw new ApiError("الوردية غير مفتوحة");
-      }
+
 
       const [row] = await tx
         .insert(financialTransactions)
@@ -620,24 +634,14 @@ export async function createExpense(
         .returning();
 
       const result = { id: row.id, amount: fromCents(amountCents) };
-      await rememberProcessed(tx, ctx.tenantId, input.clientMutationId, "expense", row.id, result);
       return result;
     });
-  } catch (err) {
-    if (input.clientMutationId && isUniqueViolation(err)) {
-      const [row] = await db
-        .select()
-        .from(processedMutations)
-        .where(and(eq(processedMutations.tenantId, ctx.tenantId), eq(processedMutations.clientMutationId, input.clientMutationId)))
-        .limit(1);
-      if (row) return { ...(row.result as { id: string; amount: string }), duplicated: true } as { id: string; amount: string };
-    }
-    throw err;
-  }
+
 }
 
 /* --------------------------- PURCHASE RETURNS --------------------------- */
 export interface PurchaseReturnInput {
+  clientMutationId?: string | null;
   items: { purchaseItemId: string; qty: string | number }[];
   refundMethod: "cash" | "debt";
   shiftId?: string | null;
@@ -645,7 +649,8 @@ export interface PurchaseReturnInput {
 }
 
 export async function returnPurchaseItems(ctx: Ctx, purchaseId: string, input: PurchaseReturnInput) {
-  return withTenantTx(ctx, async (tx) => {
+  return operation(ctx, { ...input, purchaseId }, "purchases:manage", "purchase.return", async (tx) => {
+    await lockShift(tx, ctx, input.shiftId);
     const [purchase] = await tx
       .select()
       .from(purchases)
@@ -653,8 +658,9 @@ export async function returnPurchaseItems(ctx: Ctx, purchaseId: string, input: P
       .for("update")
       .limit(1);
     if (!purchase) throw new ApiError("فاتورة الشراء غير موجودة", 404);
-    if (!input.items?.length) throw new ApiError("اختر بنداً واحداً على الأقل للإرجاع");
+    if (!Array.isArray(input.items) || !input.items.length || input.items.length > 200) throw new ApiError("اختر بنداً واحداً على الأقل للإرجاع");
 
+    if (!["cash", "debt"].includes(input.refundMethod)) throw new ApiError("طريقة الإرجاع غير صالحة");
     let refundCents = 0;
     for (const item of input.items) {
       const [line] = await tx
@@ -665,12 +671,12 @@ export async function returnPurchaseItems(ctx: Ctx, purchaseId: string, input: P
         .limit(1);
       if (!line) throw new ApiError("بند فاتورة الشراء غير موجود", 404);
       const q = toMilliQty(item.qty);
-      const available = toMilliQty(line.qty);
+      const available = toMilliQty(line.qty) - toMilliQty(line.returnedQty);
       if (q <= 0 || q > available) throw new ApiError("كمية الإرجاع أكبر من الكمية المشتراة");
-      refundCents += toCents(mulQtyPrice(item.qty, line.unitCost));
-      // Reduce qty on purchase item (soft, keep history)
-      const newQty = fromMilliQty(available - q);
-      await tx.update(purchaseItems).set({ qty: newQty, total: mulQtyPrice(newQty, line.unitCost) }).where(eq(purchaseItems.id, line.id));
+      const oldReturned = toMilliQty(line.returnedQty);
+      refundCents += roundRatio(BigInt(oldReturned + q) * BigInt(toCents(line.total)), BigInt(toMilliQty(line.qty)))
+        - roundRatio(BigInt(oldReturned) * BigInt(toCents(line.total)), BigInt(toMilliQty(line.qty)));
+      await tx.update(purchaseItems).set({ returnedQty: fromMilliQty(oldReturned + q) }).where(eq(purchaseItems.id, line.id));
 
       const [product] = await tx
         .select()
@@ -697,7 +703,7 @@ export async function returnPurchaseItems(ctx: Ctx, purchaseId: string, input: P
       }
     }
 
-    if (refundCents <= 0) throw new ApiError("قيمة الإرجاع صفر");
+
 
     // Adjust supplier liability / cash
     const [supplier] = await tx
@@ -706,25 +712,27 @@ export async function returnPurchaseItems(ctx: Ctx, purchaseId: string, input: P
       .where(and(eq(suppliers.id, purchase.supplierId), eq(suppliers.tenantId, ctx.tenantId)))
       .for("update")
       .limit(1);
-    if (!supplier) throw new ApiError("المورّد غير موجود", 404);
+    if (!supplier || !supplier.isActive) throw new ApiError("المورّد غير موجود أو موقوف", 404);
 
+    const [settlement]=await settlementInvoices(tx,ctx.tenantId,"supplier_payment",undefined,purchase.id);
     if (input.refundMethod === "cash") {
+      if (refundCents > toCents(settlement.refundable)) throw new ApiError("الإرجاع النقدي أكبر من المدفوع للمورّد");
       await tx.insert(financialTransactions).values({
         tenantId: ctx.tenantId,
         type: "supplier_payment",
         amount: fromCents(refundCents),
         refType: "purchase",
         refId: purchase.id,
-        shiftId: input.shiftId ?? purchase.shiftId,
+        shiftId: input.shiftId ?? null,
         userId: ctx.userId,
         description: `مرتجع شراء من ${supplier.name}`,
       });
       await tx.insert(payments).values({
         tenantId: ctx.tenantId,
-        kind: "supplier_payment",
+        kind: "supplier_refund",
         supplierId: supplier.id,
         purchaseId: purchase.id,
-        shiftId: input.shiftId ?? purchase.shiftId,
+        shiftId: input.shiftId ?? null,
         userId: ctx.userId,
         amount: fromCents(refundCents),
         method: "cash",
@@ -732,7 +740,11 @@ export async function returnPurchaseItems(ctx: Ctx, purchaseId: string, input: P
       });
     } else {
       // Reduce what we owe the supplier
-      const newBalance = Math.max(0, toCents(supplier.balance) - refundCents);
+      if (refundCents > toCents(supplier.balance) || refundCents > toCents(settlement.outstanding)) throw new ApiError("الإرجاع أكبر من الدين المتبقي؛ يلزم تسوية موثقة");
+      if(!isReconciled(await settlementInvoices(tx,ctx.tenantId,"supplier_payment",supplier.id),supplier.balance))throw new ApiError("راجع التخصيصات التاريخية قبل تخفيض المستحق",409,"RECONCILIATION_REQUIRED");
+      const newBalance = toCents(supplier.balance) - refundCents;
+      await tx.insert(payments).values({ tenantId: ctx.tenantId, kind: "supplier_debt_refund", purchaseId: purchase.id,
+        supplierId: supplier.id, userId: ctx.userId, amount: fromCents(refundCents), method: "credit" });
       await tx.update(suppliers).set({ balance: fromCents(newBalance) }).where(eq(suppliers.id, supplier.id));
     }
 
@@ -742,7 +754,8 @@ export async function returnPurchaseItems(ctx: Ctx, purchaseId: string, input: P
 
 /* ---------------------------------- SHIFTS --------------------------------- */
 export async function openShift(ctx: Ctx, input: { registerId: string; openingCash: string | number }) {
-  return withTenantTx(ctx, async (tx) => {
+  return operation(ctx, input, "cash:manage", "shift.open", async (tx) => {
+    if (toCents(input.openingCash) < 0) throw new ApiError("رصيد الافتتاح غير صالح");
     const [register] = await tx
       .select()
       .from(cashRegisters)
@@ -772,7 +785,7 @@ export async function computeShiftExpected(tx: Tx, shift: typeof shifts.$inferSe
 }
 
 export async function closeShift(ctx: Ctx, shiftId: string, input: { countedCash: string | number; notes?: string }) {
-  return withTenantTx(ctx, async (tx) => {
+  return operation(ctx, { ...input, shiftId }, "cash:manage", "shift.close", async (tx) => {
     const [shift] = await tx
       .select()
       .from(shifts)
@@ -783,6 +796,8 @@ export async function closeShift(ctx: Ctx, shiftId: string, input: { countedCash
     if (shift.status !== "open") throw new ApiError("الوردية مغلقة مسبقاً");
     const expectedCents = await computeShiftExpected(tx, shift);
     const countedCents = toCents(input.countedCash);
+    if (countedCents < 0) throw new ApiError("النقد المعدود غير صالح");
+    if (ctx.role === "cashier" && shift.userId !== ctx.userId) throw new ApiError("الوردية تخص مستخدماً آخر", 403);
     const [closed] = await tx
       .update(shifts)
       .set({
@@ -800,8 +815,8 @@ export async function closeShift(ctx: Ctx, shiftId: string, input: { countedCash
 }
 
 /** Plan limits helper used when creating users/products. */
-export async function getTenantPlan(tenantId: string) {
-  const [row] = await db
+export async function getTenantPlan(tenantId: string, connection: typeof db | Tx = db) {
+  const [row] = await connection
     .select({ plan: plans })
     .from(subscriptions)
     .innerJoin(plans, eq(subscriptions.planId, plans.id))
@@ -809,4 +824,60 @@ export async function getTenantPlan(tenantId: string) {
     .orderBy(sql`${subscriptions.createdAt} desc`)
     .limit(1);
   return row?.plan ?? null;
+}
+
+
+/** Historical allocation changes no money. Owner review/reason is mandatory. */
+export async function allocateHistoricalPayment(ctx:Ctx,paymentId:string,input:AllocationOptions & {reason:string;clientMutationId:string}) {
+  if(ctx.role!=="tenant_owner")throw new ApiError("المراجعة التاريخية لمالك المتجر فقط",403);
+  if(typeof input.reason!=="string"||!input.reason.trim()||input.reason.length>500)throw new ApiError("سبب المراجعة مطلوب (حتى ٥٠٠ حرف)");
+  return operation(ctx,{...input,paymentId},"payments:manage","payment.allocate",async tx=>{
+    const [p]=await tx.select().from(payments).where(and(eq(payments.id,paymentId),eq(payments.tenantId,ctx.tenantId))).for("update");
+    if(!p)throw new ApiError("السداد غير موجود",404);
+    if(!["customer_payment","supplier_payment"].includes(p.kind)||p.saleId||p.purchaseId||p.reversesPaymentId||toCents(p.amount)<=0)throw new ApiError("هذه الدفعة ليست سداداً عاماً قابلاً للتخصيص",409);
+    const [existing]=await tx.select().from(paymentAllocations).where(eq(paymentAllocations.paymentId,p.id));
+    const [reversal]=await tx.select().from(payments).where(eq(payments.reversesPaymentId,p.id));
+    if(existing||reversal)throw new ApiError("السداد مخصص أو معكوس مسبقاً",409);
+    const kind=p.kind as "customer_payment"|"supplier_payment";
+    const rows=await settlementInvoices(tx,ctx.tenantId,kind,(p.customerId??p.supplierId)!);
+    const selected=planAllocation(rows,p.amount,input);
+    await insertAllocations(tx,ctx.tenantId,p.id,kind,selected);
+    return {id:p.id,allocations:selected,reason:input.reason};
+  });
+}
+
+/** Full reversal appends a compensating payment/cash entry; never edits the original. */
+export async function reversePayment(ctx:Ctx,paymentId:string,input:{reason:string;shiftId?:string|null;clientMutationId:string}) {
+  if(typeof input.reason!=="string"||!input.reason.trim()||input.reason.length>500)throw new ApiError("سبب العكس مطلوب (حتى ٥٠٠ حرف)");
+  return operation(ctx,{...input,paymentId},"payments:manage","payment.reverse",async tx=>{
+    await lockShift(tx,ctx,input.shiftId);
+    const [p]=await tx.select().from(payments).where(and(eq(payments.id,paymentId),eq(payments.tenantId,ctx.tenantId))).for("update");
+    if(!p)throw new ApiError("السداد غير موجود",404);
+    if(!["customer_payment","supplier_payment"].includes(p.kind)||p.saleId||p.purchaseId||p.reversesPaymentId)throw new ApiError("يُعكس السداد العام فقط؛ دفعات الفواتير تُصحح بمرتجع موثق",409);
+    const [reversed]=await tx.select().from(payments).where(eq(payments.reversesPaymentId,p.id));
+    if(reversed)throw new ApiError("السداد معكوس مسبقاً",409);
+    const allocations=await tx.select().from(paymentAllocations).where(eq(paymentAllocations.paymentId,p.id));
+    if(allocations.reduce((s,a)=>s+BigInt(toCents(a.amount)),0n)!==BigInt(toCents(p.amount)))throw new ApiError("خصص السداد التاريخي قبل عكسه",409,"RECONCILIATION_REQUIRED");
+    const customer=p.kind==="customer_payment";
+    const invoices=await settlementInvoices(tx,ctx.tenantId,customer?"customer_payment":"supplier_payment",(p.customerId??p.supplierId)!);
+    for(const a of allocations) {
+      const invoice=invoices.find(i=>i.id===(a.saleId??a.purchaseId));
+      if(!invoice||toCents(invoice.refundable)<toCents(a.amount))throw new ApiError("لا يمكن عكس مبلغ استُخدم لتمويل مرتجع؛ راجع تسوية الفاتورة",409);
+    }
+    let newBalance:string;
+    if(customer) {
+      const [party]=await tx.select().from(customers).where(and(eq(customers.id,p.customerId!),eq(customers.tenantId,ctx.tenantId))).for("update");
+      if(!party)throw new ApiError("العميل غير موجود",404);
+      newBalance=fromCents(toCents(party.balance)+toCents(p.amount));
+      await tx.update(customers).set({balance:newBalance}).where(eq(customers.id,party.id));
+    } else {
+      const [party]=await tx.select().from(suppliers).where(and(eq(suppliers.id,p.supplierId!),eq(suppliers.tenantId,ctx.tenantId))).for("update");
+      if(!party)throw new ApiError("المورّد غير موجود",404);
+      newBalance=fromCents(toCents(party.balance)+toCents(p.amount));
+      await tx.update(suppliers).set({balance:newBalance}).where(eq(suppliers.id,party.id));
+    }
+    const [reversal]=await tx.insert(payments).values({tenantId:ctx.tenantId,kind:customer?"customer_payment_reversal":"supplier_payment_reversal",customerId:p.customerId,supplierId:p.supplierId,reversesPaymentId:p.id,amount:p.amount,method:p.method,userId:ctx.userId,shiftId:input.shiftId??null,notes:input.reason,clientMutationId:input.clientMutationId}).returning();
+    if(p.method==="cash")await tx.insert(financialTransactions).values({tenantId:ctx.tenantId,type:"adjustment",amount:fromCents((customer?-1:1)*toCents(p.amount)),refType:"payment_reversal",refId:reversal.id,userId:ctx.userId,shiftId:input.shiftId??null,description:input.reason});
+    return {id:reversal.id,reversesPaymentId:p.id,newBalance};
+  });
 }

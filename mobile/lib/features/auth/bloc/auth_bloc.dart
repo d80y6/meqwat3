@@ -91,8 +91,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
   }
 
   Future<void> _onLogout(AuthLogoutRequested event, Emitter<AuthState> emit) async {
-    await repository.logout();
-    emit(const AuthUnauthenticated());
+    try { await repository.logout(); } finally { emit(const AuthUnauthenticated()); }
   }
 
   AuthState _fromMe(Map<String, dynamic> me) {

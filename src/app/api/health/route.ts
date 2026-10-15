@@ -23,12 +23,11 @@ export async function GET() {
         },
       },
     );
-  } catch (err) {
+  } catch {
     return Response.json(
       {
         ok: false,
         error: "database_unreachable",
-        detail: err instanceof Error ? err.message.slice(0, 200) : "unknown",
       },
       {
         status: 503,

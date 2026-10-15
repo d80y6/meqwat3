@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:uuid/uuid.dart';
 
 import '../../../core/api/api_client.dart';
+import '../../../core/money/money.dart';
 import '../../../core/database/app_database.dart';
 
 /// Debts & liabilities. Payments are queued through the same outbox as
@@ -15,11 +16,11 @@ class DebtsRepository {
   final _uuid = const Uuid();
 
   Future<({List<Map<String, dynamic>> customers, List<Map<String, dynamic>> suppliers})> fetchDebtors() async {
-    final c = await api.get('/api/customers?debt=1&limit=200');
-    final s = await api.get('/api/suppliers?debt=1&limit=200');
+    final c = await api.collection('/api/customers?debt=1');
+    final s = await api.collection('/api/suppliers?debt=1');
     return (
-      customers: (c['items'] as List).cast<Map<String, dynamic>>(),
-      suppliers: (s['items'] as List).cast<Map<String, dynamic>>(),
+      customers: c,
+      suppliers: s,
     );
   }
 
@@ -29,13 +30,17 @@ class DebtsRepository {
     String? supplierId,
     required String amount,
     required String label,
+    String? allocationMode,List<Map<String,dynamic>>? allocations,
   }) async {
+    if(Money.cents(amount)<=0)throw const FormatException('المبلغ يجب أن يكون موجباً');
     final mutationId = _uuid.v4();
     await db.enqueueOutbox({
       'client_mutation_id': mutationId,
       'type': 'payment',
       'payload': jsonEncode({
         'kind': kind,
+        if(allocationMode!=null)'allocationMode':allocationMode,
+        if(allocations!=null)'allocations':allocations,
         'customerId': customerId,
         'supplierId': supplierId,
         'amount': amount,

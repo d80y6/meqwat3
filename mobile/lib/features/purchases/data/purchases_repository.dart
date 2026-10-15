@@ -10,20 +10,9 @@ class PurchasesRepository {
   final AppDatabase db;
   final _uuid = const Uuid();
 
-  Future<List<Map<String, dynamic>>> suppliers() async {
-    final data = await api.get('/api/suppliers?limit=200');
-    return (data['items'] as List).cast<Map<String, dynamic>>();
-  }
-
-  Future<List<Map<String, dynamic>>> products() async {
-    final data = await api.get('/api/products?active=1&limit=200');
-    return (data['items'] as List).cast<Map<String, dynamic>>();
-  }
-
-  Future<List<Map<String, dynamic>>> purchases() async {
-    final data = await api.get('/api/purchases?limit=50');
-    return (data['items'] as List).cast<Map<String, dynamic>>();
-  }
+  Future<List<Map<String,dynamic>>> suppliers() => api.collection('/api/suppliers');
+  Future<List<Map<String,dynamic>>> products() => api.collection('/api/products?active=1');
+  Future<List<Map<String,dynamic>>> purchases() => api.collection('/api/purchases');
 
   Future<void> queuePurchase({
     required String supplierId,

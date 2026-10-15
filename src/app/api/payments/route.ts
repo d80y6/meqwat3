@@ -1,13 +1,13 @@
 import { db } from "@/db";
 import { payments, customers, suppliers } from "@/db/schema";
 import { and, eq, desc, count } from "drizzle-orm";
-import { ok, handler, requireTenantUser, parsePagination, audit, ApiError } from "@/lib/api";
+import { requireMutationId, ok, handler, requireTenantUser, parsePagination, audit, ApiError } from "@/lib/api";
 import { assertTenantWritable, recordPayment } from "@/lib/services";
 
 export const dynamic = "force-dynamic";
 
 export const GET = handler(async (req: Request) => {
-  const user = await requireTenantUser();
+  const user = await requireTenantUser("payments:manage");
   const { limit, offset } = parsePagination(req);
   const url = new URL(req.url);
   const conds = [eq(payments.tenantId, user.tenantId)];
@@ -21,7 +21,7 @@ export const GET = handler(async (req: Request) => {
       .leftJoin(customers, eq(payments.customerId, customers.id))
       .leftJoin(suppliers, eq(payments.supplierId, suppliers.id))
       .where(where)
-      .orderBy(desc(payments.createdAt))
+      .orderBy(desc(payments.createdAt), payments.id)
       .limit(limit)
       .offset(offset),
     db.select({ c: count() }).from(payments).where(where),
@@ -36,6 +36,7 @@ export const POST = handler(async (req: Request) => {
   const user = await requireTenantUser("payments:manage");
   await assertTenantWritable(user.tenantId);
   const body = await req.json();
+  requireMutationId(body);
   if (body?.kind !== "customer_payment" && body?.kind !== "supplier_payment") {
     throw new ApiError("نوع السداد غير صالح");
   }
@@ -43,6 +44,7 @@ export const POST = handler(async (req: Request) => {
     { tenantId: user.tenantId, userId: user.id, role: user.role },
     {
       kind: body.kind,
+      allocationMode:body.allocationMode, allocations:body.allocations,
       customerId: body.customerId,
       supplierId: body.supplierId,
       amount: body.amount,

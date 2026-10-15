@@ -2,12 +2,12 @@ import { db } from "@/db";
 import { tenants, subscriptions, plans } from "@/db/schema";
 import { eq, desc } from "drizzle-orm";
 import { getCurrentUser } from "@/lib/auth";
-import { ok, fail } from "@/lib/api";
+import { ok, fail, handler } from "@/lib/api";
 import { ROLE_PERMISSIONS } from "@/lib/permissions";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export const GET = handler(async () => {
   const user = await getCurrentUser();
   if (!user) return fail("غير مسجل الدخول", 401, "UNAUTHENTICATED");
   let tenant: { id: string; name: string; currency: string; isDemo: boolean } | null = null;
@@ -25,4 +25,4 @@ export async function GET() {
     if (s) subscription = s;
   }
   return ok({ user, tenant, subscription, permissions: ROLE_PERMISSIONS[user.role] ?? [] });
-}
+});

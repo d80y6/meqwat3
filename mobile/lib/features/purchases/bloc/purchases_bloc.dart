@@ -1,3 +1,4 @@
+import '../../../core/money/money.dart';
 import 'package:equatable/equatable.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
@@ -31,6 +32,7 @@ class PurchasesState extends Equatable {
     this.products = const [],
     this.pendingCount = 0,
     this.message,
+    this.savedCount=0,
   });
   final PurchasesStatus status;
   final List<Map<String, dynamic>> purchases;
@@ -38,9 +40,10 @@ class PurchasesState extends Equatable {
   final List<Map<String, dynamic>> products;
   final int pendingCount;
   final String? message;
-  PurchasesState copyWith({PurchasesStatus? status, List<Map<String, dynamic>>? purchases, List<Map<String, dynamic>>? suppliers, List<Map<String, dynamic>>? products, int? pendingCount, String? message, bool clearMessage = false}) =>
-    PurchasesState(status: status ?? this.status, purchases: purchases ?? this.purchases, suppliers: suppliers ?? this.suppliers, products: products ?? this.products, pendingCount: pendingCount ?? this.pendingCount, message: clearMessage ? null : (message ?? this.message));
-  @override List<Object?> get props => [status, purchases, suppliers, products, pendingCount, message];
+  final int savedCount;
+  PurchasesState copyWith({PurchasesStatus? status, List<Map<String, dynamic>>? purchases, List<Map<String, dynamic>>? suppliers, List<Map<String, dynamic>>? products, int? pendingCount, String? message, bool clearMessage = false, int? savedCount}) =>
+    PurchasesState(savedCount:savedCount??this.savedCount,status: status ?? this.status, purchases: purchases ?? this.purchases, suppliers: suppliers ?? this.suppliers, products: products ?? this.products, pendingCount: pendingCount ?? this.pendingCount, message: clearMessage ? null : (message ?? this.message));
+  @override List<Object?> get props => [status, purchases, suppliers, products, pendingCount, message, savedCount];
 }
 
 class PurchasesBloc extends Bloc<PurchasesEvent, PurchasesState> {
@@ -52,6 +55,7 @@ class PurchasesBloc extends Bloc<PurchasesEvent, PurchasesState> {
   }
   final PurchasesRepository repository;
   final SyncRepository sync;
+  bool _saving=false;
 
   Future<void> _onStarted(PurchasesStarted e, Emitter<PurchasesState> emit) async {
     emit(state.copyWith(status: PurchasesStatus.loading));
@@ -73,11 +77,16 @@ class PurchasesBloc extends Bloc<PurchasesEvent, PurchasesState> {
     }
   }
   Future<void> _onQueued(PurchaseQueued e, Emitter<PurchasesState> emit) async {
+    if(_saving)return;_saving=true;
     emit(state.copyWith(status: PurchasesStatus.saving));
-    final total = e.items.fold<num>(0, (s, i) => s + (num.tryParse(i['total']?.toString() ?? i['qty'].toString()) ?? 0));
-    await repository.queuePurchase(supplierId: e.supplierId, items: e.items, paidAmount: e.paidAmount, notes: e.notes, label: 'فاتورة شراء — ${e.items.length} صنف — $total');
-    emit(state.copyWith(status: PurchasesStatus.ready, pendingCount: await repository.pendingCount(), message: 'حُفظت فاتورة الشراء محلياً — ستُزامَن عند الاتصال'));
-    add(const PurchasesSyncRequested());
+    try {
+      final total=e.items.fold<int>(0,(sum,i)=>sum+Money.line(i['qty'].toString(),i['unitCost'].toString()));
+      if(Money.cents(e.paidAmount)>total)throw const FormatException('المدفوع أكبر من الإجمالي');
+      await repository.queuePurchase(supplierId:e.supplierId,items:e.items,paidAmount:e.paidAmount,notes:e.notes,label:'فاتورة شراء — ${Money.format(total)}');
+      emit(state.copyWith(status:PurchasesStatus.ready,savedCount:state.savedCount+1,message:'حُفظت الفاتورة محلياً'));
+      add(const PurchasesSyncRequested());
+    }catch(e){emit(state.copyWith(status:PurchasesStatus.ready,message:'لم تُحفظ الفاتورة — احتفظ بالبنود: $e'));}
+    finally{_saving=false;}
   }
   Future<void> _onSync(PurchasesSyncRequested e, Emitter<PurchasesState> emit) async {
     emit(state.copyWith(status: PurchasesStatus.syncing));

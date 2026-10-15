@@ -1,7 +1,7 @@
 import { db } from "@/db";
 import { sales, saleItems, products, customers } from "@/db/schema";
-import { and, eq, desc, count, gte, lte } from "drizzle-orm";
-import { ok, handler, requireTenantUser, parsePagination, audit, ApiError } from "@/lib/api";
+import { and, eq, desc, count, gte, lte, inArray } from "drizzle-orm";
+import { requireMutationId, ok, handler, requireTenantUser, parsePagination, audit, ApiError } from "@/lib/api";
 import { assertTenantWritable, createSale } from "@/lib/services";
 
 export const dynamic = "force-dynamic";
@@ -27,7 +27,7 @@ export const GET = handler(async (req: Request) => {
       .from(sales)
       .leftJoin(customers, eq(sales.customerId, customers.id))
       .where(where)
-      .orderBy(desc(sales.saleDate))
+      .orderBy(desc(sales.saleDate), sales.id)
       .limit(limit)
       .offset(offset),
     db.select({ c: count() }).from(sales).where(where),
@@ -38,7 +38,7 @@ export const GET = handler(async (req: Request) => {
         .select({ item: saleItems, productName: products.name, unit: products.unit })
         .from(saleItems)
         .innerJoin(products, eq(saleItems.productId, products.id))
-        .where(eq(saleItems.tenantId, user.tenantId))
+        .where(and(eq(saleItems.tenantId, user.tenantId), inArray(saleItems.saleId, rows.map(r=>r.sale.id))))
     : [];
   const bySale = new Map<string, unknown[]>();
   for (const row of items) {
@@ -57,6 +57,7 @@ export const POST = handler(async (req: Request) => {
   const user = await requireTenantUser("pos:use");
   await assertTenantWritable(user.tenantId);
   const body = await req.json();
+  requireMutationId(body);
   if (!Array.isArray(body?.items) || body.items.length === 0) throw new ApiError("أضف صنفاً واحداً على الأقل");
   const result = await createSale(
     { tenantId: user.tenantId, userId: user.id, role: user.role },

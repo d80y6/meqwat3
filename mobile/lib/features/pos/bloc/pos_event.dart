@@ -17,6 +17,7 @@ class PosCheckoutRequested extends PosEvent {
     required this.items,
     required this.paidAmount,
     this.customerId,
+    this.shiftId, this.registerId,
     this.discount = '0',
   });
 
@@ -24,10 +25,11 @@ class PosCheckoutRequested extends PosEvent {
   final List<Map<String, dynamic>> items;
   final String paidAmount;
   final String? customerId;
+  final String? shiftId, registerId;
   final String discount;
 
   @override
-  List<Object?> get props => [items, paidAmount, customerId, discount];
+  List<Object?> get props => [items, paidAmount, customerId, discount, shiftId, registerId];
 }
 
 class PosSyncRequested extends PosEvent {

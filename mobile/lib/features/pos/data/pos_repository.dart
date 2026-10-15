@@ -15,8 +15,9 @@ class PosRepository {
   final _uuid = const Uuid();
 
   Future<void> refreshCatalog() async {
-    final data = await api.get('/api/products?active=1&limit=200');
-    final items = (data['items'] as List).cast<Map<String, dynamic>>();
+    final owner = db.ownerKey;
+    final items = await api.collection('/api/products?active=1');
+    if (owner == null || owner != db.ownerKey) throw StateError('Session changed');
     await db.replaceProducts(items.map((p) => {
           'id': p['id'],
           'name': p['name'],
@@ -41,6 +42,7 @@ class PosRepository {
     required List<Map<String, dynamic>> items,
     required String paidAmount,
     String? customerId,
+    String? shiftId, String? registerId,
     String discount = '0',
     required String label,
   }) async {
@@ -49,7 +51,7 @@ class PosRepository {
       'client_mutation_id': mutationId,
       'type': 'sale',
       'payload': jsonEncode({
-        'customerId': customerId,
+        'customerId': customerId, 'shiftId': shiftId, 'registerId': registerId,
         'items': items,
         'discount': discount,
         'paidAmount': paidAmount,

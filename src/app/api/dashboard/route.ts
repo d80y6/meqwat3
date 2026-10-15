@@ -1,3 +1,4 @@
+import { businessDayStart } from "@/lib/business-date";
 import { db } from "@/db";
 import { sales, products, customers, suppliers, shifts, financialTransactions } from "@/db/schema";
 import { and, eq, gte, sql } from "drizzle-orm";
@@ -6,18 +7,11 @@ import { toCents, fromCents } from "@/lib/money";
 
 export const dynamic = "force-dynamic";
 
-function dayStart(offsetDays: number): Date {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  d.setDate(d.getDate() - offsetDays);
-  return d;
-}
-
 export const GET = handler(async () => {
   const user = await requireTenantUser();
   const tid = user.tenantId;
-  const today = dayStart(0);
-  const weekAgo = dayStart(6);
+  const today = businessDayStart(0);
+  const weekAgo = businessDayStart(6);
 
   const [todaySales] = await db
     .select({
@@ -52,24 +46,24 @@ export const GET = handler(async () => {
   // Sales per day for the last 7 days (for the chart).
   const daily = await db
     .select({
-      day: sql<string>`to_char(date_trunc('day', ${sales.saleDate}), 'YYYY-MM-DD')`,
-      total: sql<string>`coalesce(sum(${sales.totalAmount} - ${sales.discount}),0)`,
+      day: sql<string>`to_char(date_trunc('day', ${sales.saleDate} at time zone 'Asia/Aden'), 'YYYY-MM-DD')`,
+      total: sql<string>`coalesce(sum(${sales.totalAmount} - ${sales.discount} - ${sales.returnedAmount}),0)`,
       count: sql<number>`count(*)::int`,
     })
     .from(sales)
     .where(and(eq(sales.tenantId, tid), gte(sales.saleDate, weekAgo)))
-    .groupBy(sql`date_trunc('day', ${sales.saleDate})`)
-    .orderBy(sql`date_trunc('day', ${sales.saleDate})`);
+    .groupBy(sql`date_trunc('day', ${sales.saleDate} at time zone 'Asia/Aden')`)
+    .orderBy(sql`date_trunc('day', ${sales.saleDate} at time zone 'Asia/Aden')`);
 
   // Gross profit today: revenue - COGS of items sold today.
   const [profit] = await db
     .select({
-      revenue: sql<string>`coalesce(sum((${sales.totalAmount} - ${sales.discount})),0)`,
+      revenue: sql<string>`coalesce(sum((${sales.totalAmount} - ${sales.discount} - ${sales.returnedAmount})),0)`,
     })
     .from(sales)
     .where(and(eq(sales.tenantId, tid), gte(sales.saleDate, today)));
   const [cogs] = await db
-    .select({ total: sql<string>`coalesce(sum(si.qty * si.cost_price),0)` })
+    .select({ total: sql<string>`coalesce(round(sum((si.qty - si.returned_qty) * si.cost_price),2),0)` })
     .from(sql`sale_items si inner join sales s on s.id = si.sale_id`)
     .where(sql`si.tenant_id = ${tid} and s.sale_date >= ${today.toISOString()}`);
 

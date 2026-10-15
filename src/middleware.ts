@@ -1,3 +1,4 @@
+import { allowedMutationOrigin } from "./lib/csrf";
 import { NextResponse, type NextRequest } from "next/server";
 
 /**
@@ -37,31 +38,12 @@ function accessExpired(req: NextRequest): boolean {
   }
 }
 
-function isAllowedOrigin(req: NextRequest): boolean {
-  // For same-site requests, Origin is absent on GET navigation but present on POST.
-  // We only enforce on state-changing methods; GET/HEAD are safe.
-  const method = req.method.toUpperCase();
-  if (method === "GET" || method === "HEAD" || method === "OPTIONS") return true;
-  const origin = req.headers.get("origin");
-  const site = req.headers.get("sec-fetch-site");
-  // Allow same-origin and same-site; block obvious cross-site forgeries.
-  if (site === "same-origin" || site === "same-site" || site === "none") return true;
-  if (!origin) return true; // no Origin header on some same-site POSTs (e.g. form without CORS)
-  try {
-    const host = req.nextUrl.host;
-    const originHost = new URL(origin).host;
-    return originHost === host;
-  } catch {
-    return false;
-  }
-}
-
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
   const isProtected = PROTECTED.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 
   // CSRF check for protected mutations (defense-in-depth; httpOnly+SameSite=lax is primary).
-  if (isProtected && !isAllowedOrigin(req)) {
+  if ((isProtected || pathname.startsWith("/api/")) && !allowedMutationOrigin(req)) {
     return new NextResponse(JSON.stringify({ ok: false, error: "طلب مرفوض (CSRF)", code: "CSRF_BLOCKED" }), {
       status: 403,
       headers: { "Content-Type": "application/json" },
@@ -88,7 +70,17 @@ export async function middleware(req: NextRequest) {
       });
       if (res.ok) {
         const setCookies = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [];
-        const response = NextResponse.next();
+        // Refresh cookies must also reach the current server-rendered request.
+        const requestHeaders = new Headers(req.headers);
+        const pairs = new Map((req.headers.get("cookie") ?? "").split(";").filter(Boolean).map(c => {
+          const i = c.indexOf("="); return [c.slice(0, i).trim(), c.slice(i + 1)];
+        }));
+        for (const c of setCookies) {
+          const pair = c.split(";")[0]; const i = pair.indexOf("=");
+          pairs.set(pair.slice(0, i), pair.slice(i + 1));
+        }
+        requestHeaders.set("cookie", [...pairs].map(([k,v]) => `${k}=${v}`).join("; "));
+        const response = NextResponse.next({ request: { headers: requestHeaders } });
         for (const c of setCookies) response.headers.append("set-cookie", c);
         return response;
       }
@@ -110,5 +102,5 @@ export async function middleware(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!api|_next/static|_next/image|favicon.ico).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
 };

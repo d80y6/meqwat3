@@ -9,16 +9,9 @@
 --   app.tenant_id  — current tenant UUID ('' when platform-level)
 --   app.is_admin   — 'true' for platform administration contexts
 --
--- Policy semantics: when app.tenant_id is SET (all transactional business
--- writes go through withTenantTx), rows of other tenants are invisible and
--- unwritable. When it is NOT set (pre-auth lookups, global admin reads done
--- by the trusted server process), access is allowed — the service layer's
--- explicit tenant_id filters remain the primary control there.
---
--- Apply after `npx drizzle-kit push`:
---   psql "$DATABASE_URL" -f db/rls.sql
--- Verified with a non-superuser role (meqwat_app): with tenant A set,
--- tenant B rows return 0 and cross-tenant INSERTs are rejected.
+-- Fail closed: absent context sees no tenant data. The server wraps every
+-- statement in a transaction with explicit tenant or trusted auth/admin context.
+-- Apply with schema owner, run the app as a non-superuser/non-BYPASSRLS role.
 
 DO $$
 DECLARE
@@ -27,7 +20,7 @@ DECLARE
     'subscriptions','users','products','customers','suppliers','cash_registers',
     'shifts','purchases','purchase_items','sales','sale_items','payments',
     'inventory_movements','financial_transactions','processed_mutations',
-    'tenant_counters'
+    'tenant_counters','subscription_requests'
   ];
 BEGIN
   FOREACH t IN ARRAY tenant_tables LOOP
@@ -37,13 +30,11 @@ BEGIN
     EXECUTE format(
       'CREATE POLICY tenant_isolation ON %I
          USING (
-           coalesce(current_setting(''app.tenant_id'', true), '''') = ''''
-           OR current_setting(''app.is_admin'', true) = ''true''
+           current_setting(''app.is_admin'', true) = ''true''
            OR tenant_id::text = current_setting(''app.tenant_id'', true)
          )
          WITH CHECK (
-           coalesce(current_setting(''app.tenant_id'', true), '''') = ''''
-           OR current_setting(''app.is_admin'', true) = ''true''
+           current_setting(''app.is_admin'', true) = ''true''
            OR tenant_id::text = current_setting(''app.tenant_id'', true)
          )', t);
   END LOOP;
@@ -56,11 +47,10 @@ ALTER TABLE audit_logs FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS audit_isolation ON audit_logs;
 CREATE POLICY audit_isolation ON audit_logs
   USING (
-    coalesce(current_setting('app.tenant_id', true), '') = ''
-    OR current_setting('app.is_admin', true) = 'true'
+    current_setting('app.is_admin', true) = 'true'
     OR tenant_id::text = current_setting('app.tenant_id', true)
   )
-  WITH CHECK (true);
+  WITH CHECK (current_setting('app.is_admin', true) = 'true' OR tenant_id::text = current_setting('app.tenant_id', true));
 
 -- tenants: with a tenant context set, only the own row is visible.
 ALTER TABLE tenants ENABLE ROW LEVEL SECURITY;
@@ -68,14 +58,20 @@ ALTER TABLE tenants FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_self ON tenants;
 CREATE POLICY tenant_self ON tenants
   USING (
-    coalesce(current_setting('app.tenant_id', true), '') = ''
-    OR current_setting('app.is_admin', true) = 'true'
+    current_setting('app.is_admin', true) = 'true'
     OR id::text = current_setting('app.tenant_id', true)
   )
   WITH CHECK (
-    coalesce(current_setting('app.tenant_id', true), '') = ''
-    OR current_setting('app.is_admin', true) = 'true'
+    current_setting('app.is_admin', true) = 'true'
   );
 
 -- Reference/public tables stay readable (plans catalog is public).
 ALTER TABLE plans DISABLE ROW LEVEL SECURITY;
+
+-- Authentication is performed through the explicit trusted auth context.
+ALTER TABLE sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sessions FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS session_auth_only ON sessions;
+CREATE POLICY session_auth_only ON sessions
+  USING (current_setting('app.is_admin', true) = 'true' OR user_id IN (SELECT id FROM users WHERE tenant_id::text = current_setting('app.tenant_id', true)))
+  WITH CHECK (current_setting('app.is_admin', true) = 'true' OR user_id IN (SELECT id FROM users WHERE tenant_id::text = current_setting('app.tenant_id', true)));

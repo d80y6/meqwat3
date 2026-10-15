@@ -16,6 +16,7 @@ const STATUS_LABEL: Record<string, string> = { trial: "تجريبي", active: "�
 
 export default function SubscriptionPage() {
   const toast = useToast();
+  const [now] = useState(() => Date.now());
   const [me, setMe] = useState<MeData | null>(null);
   const [plans, setPlans] = useState<Plan[]>([]);
   const [wantedPlan, setWantedPlan] = useState("");
@@ -36,7 +37,7 @@ export default function SubscriptionPage() {
       await apiPost("/api/subscription-requests", {
         businessName: me?.tenant?.name ?? "متجر",
         ownerName: "طلب ترقية من لوحة المتجر",
-        email: "upgrade@internal",
+
         phone: "-",
         planId: wantedPlan,
         notes: `طلب تغيير باقة لمتجر (${me?.tenant?.id ?? ""}): ${notes}`,
@@ -50,7 +51,7 @@ export default function SubscriptionPage() {
 
   if (!me) return <Loading />;
 
-  const daysLeft = me.subscription?.endsAt ? Math.ceil((new Date(me.subscription.endsAt).getTime() - Date.now()) / 86400_000) : null;
+  const daysLeft = me.subscription?.endsAt ? Math.ceil((new Date(me.subscription.endsAt).getTime() - now) / 86400_000) : null;
 
   return (
     <div>

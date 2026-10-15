@@ -1,0 +1,1 @@
+ALTER TABLE "purchase_items" ADD COLUMN IF NOT EXISTS "returned_qty" numeric(12, 3) DEFAULT '0' NOT NULL;

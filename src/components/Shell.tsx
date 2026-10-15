@@ -9,7 +9,7 @@ import {
   Menu, X, LogOut, Leaf, RefreshCw, WifiOff, CloudUpload,
 } from "lucide-react";
 import { apiPost } from "@/lib/client";
-import { getQueue, subscribeQueue, syncQueue, pendingCount } from "@/lib/offline";
+import { setQueueOwner, getQueue, subscribeQueue, syncQueue, pendingCount } from "@/lib/offline";
 import { useToast } from "./ui";
 import { ROLE_LABELS, type Permission, type Role } from "@/lib/permissions";
 
@@ -60,12 +60,13 @@ export default function Shell({
   const [online, setOnline] = useState(true);
 
   useEffect(() => {
+    setQueueOwner(user.tenantId, user.id);
     const update = () => setQueued(pendingCount());
-    update();
+    queueMicrotask(update);
     const unsub = subscribeQueue(update);
     const onOnline = () => { setOnline(true); void doSync(true); };
     const onOffline = () => setOnline(false);
-    setOnline(navigator.onLine);
+    queueMicrotask(() => setOnline(navigator.onLine));
     window.addEventListener("online", onOnline);
     window.addEventListener("offline", onOffline);
     return () => {
@@ -74,7 +75,7 @@ export default function Shell({
       window.removeEventListener("offline", onOffline);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [user.tenantId, user.id]);
 
   async function doSync(silent = false) {
     if (syncing || pendingCount() === 0) return;

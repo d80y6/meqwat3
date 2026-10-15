@@ -26,6 +26,7 @@ void main() {
             items: any(named: 'items'),
             paidAmount: any(named: 'paidAmount'),
             customerId: any(named: 'customerId'),
+            shiftId: any(named:'shiftId'), registerId:any(named:'registerId'),
             discount: any(named: 'discount'),
             label: any(named: 'label'),
           )).thenAnswer((_) async => 'mutation-1');
@@ -47,6 +48,7 @@ void main() {
               items: any(named: 'items'),
               paidAmount: '16000',
               customerId: any(named: 'customerId'),
+            shiftId: any(named:'shiftId'), registerId:any(named:'registerId'),
               discount: any(named: 'discount'),
               label: any(named: 'label'),
             )).called(1);
@@ -63,6 +65,19 @@ void main() {
             .having((s) => s.status, 'status', PosStatus.ready)
             .having((s) => s.pendingCount, 'pending', 1),
       ],
+    );
+
+    blocTest<PosBloc,PosState>('failed SQLite enqueue never acknowledges checkout',
+      build:(){
+        when(()=>repo.queueSale(items:any(named:'items'),paidAmount:any(named:'paidAmount'),customerId:any(named:'customerId'),discount:any(named:'discount'),label:any(named:'label'),shiftId:any(named:'shiftId'),registerId:any(named:'registerId'))).thenThrow(StateError('disk full'));
+        return PosBloc(repository:repo,sync:sync);
+      },
+      act:(bloc)=>bloc.add(const PosCheckoutRequested(items:[{'productId':'p','qty':'1','unitPrice':'0.30'}],paidAmount:'0.30')),
+      expect:()=>[
+        isA<PosState>().having((s)=>s.status,'status',PosStatus.checkingOut),
+        isA<PosState>().having((s)=>s.status,'status',PosStatus.failure).having((s)=>s.queuedId,'no saved acknowledgement',isNull),
+      ],
+      verify:(_)=>verifyNever(()=>sync.syncNow()),
     );
   });
 }

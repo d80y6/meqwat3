@@ -1,7 +1,9 @@
+import { businessDateBoundary } from "./business-date";
 import { NextResponse } from "next/server";
 import { getCurrentUser, type AuthUser } from "./auth";
 import { hasPermission, type Permission } from "./permissions";
-import { db } from "@/db";
+import { withTenantTx } from "./tx";
+import { databaseScope } from "@/db/context";
 import { auditLogs } from "@/db/schema";
 
 export function ok(data: unknown, status = 200) {
@@ -49,14 +51,32 @@ export function handler<T extends unknown[]>(
 ): (...args: T) => Promise<NextResponse> {
   return async (...args: T) => {
     try {
-      return await fn(...args);
+      const user = await getCurrentUser();
+      return await databaseScope.run({ tenantId: user?.tenantId ?? null, isAdmin: user?.role === "platform_admin" }, async () => {
+        const request = args[0] instanceof Request ? args[0] : null;
+        if (user?.mustChangePassword && request && !new URL(request.url).pathname.startsWith("/api/auth/")) {
+          throw new ApiError("غيّر كلمة المرور المؤقتة أولاً", 403, "PASSWORD_CHANGE_REQUIRED");
+        }
+        if (request && user?.tenantId && !["GET", "HEAD", "OPTIONS"].includes(request.method)
+          && !new URL(request.url).pathname.startsWith("/api/auth/")
+          && new URL(request.url).pathname !== "/api/subscription-requests") {
+          const { assertTenantWritable } = await import("./services");
+          await assertTenantWritable(user.tenantId);
+        }
+        return fn(...args);
+      });
     } catch (err) {
       if (err instanceof ApiError) {
         const headers: Record<string, string> = {};
         if (err.code === "RATE_LIMITED") headers["Retry-After"] = "60";
         return fail(err.message, err.status, err.code, headers);
       }
-      console.error("[api] unhandled error:", err);
+      if (err instanceof SyntaxError || err instanceof RangeError) return fail("بيانات الطلب غير صالحة", 400, "INVALID_INPUT");
+      const code = (err as { cause?: { code?: string }; code?: string })?.cause?.code ?? (err as { code?: string })?.code;
+      if (["22P02", "22003", "22007", "23514"].includes(code ?? "")) return fail("بيانات الطلب غير صالحة", 400, "INVALID_INPUT");
+      if (code === "23505") return fail("تعذر استخدام هذه البيانات", 409, "CONFLICT");
+      // Do not log database query parameters, passwords or submitted payloads.
+      console.error("[api] request failed", { type: err instanceof Error ? err.name : "Unknown" });
       return fail("حدث خطأ غير متوقع في الخادم", 500, "INTERNAL");
     }
   };
@@ -71,7 +91,7 @@ export async function audit(
   ip?: string | null,
 ): Promise<void> {
   try {
-    await db.insert(auditLogs).values({
+    await withTenantTx({ tenantId: user?.tenantId ?? null }, tx => tx.insert(auditLogs).values({
       tenantId: user?.tenantId ?? null,
       userId: user?.id ?? null,
       action,
@@ -79,9 +99,9 @@ export async function audit(
       entityId,
       metadata: metadata ?? null,
       ip: ip ?? null,
-    });
+    }));
   } catch (e) {
-    console.error("[audit] failed:", e);
+    console.error("[audit] write failed", { type: e instanceof Error ? e.name : "Unknown" });
   }
 }
 
@@ -109,8 +129,19 @@ export function parseDateParam(value: string | null, label: string): Date | null
 export function parseDateRange(req: Request): { from: Date; to: Date } {
   const url = new URL(req.url);
   const now = new Date();
-  const from = parseDateParam(url.searchParams.get("from"), "from") ?? new Date(now.getTime() - 30 * 86400_000);
-  const to = parseDateParam(url.searchParams.get("to"), "to") ?? now;
+  const fromInput = url.searchParams.get("from");
+  const toInput = url.searchParams.get("to");
+  const from = (fromInput ? businessDateBoundary(fromInput) : null) ?? parseDateParam(fromInput, "from") ?? new Date(now.getTime() - 30 * 86400_000);
+  const to = (toInput ? businessDateBoundary(toInput, true) : null) ?? parseDateParam(toInput, "to") ?? now;
   if (from > to) throw new ApiError("تاريخ البداية يجب أن يسبق تاريخ النهاية");
   return { from, to };
+}
+
+/** HTTP financial mutations require a stable key; callers retain it on retries. */
+export function requireMutationId(body: unknown): string {
+  const key = (body as { clientMutationId?: unknown } | null)?.clientMutationId;
+  if (typeof key !== "string" || !/^[A-Za-z0-9_-]{8,80}$/.test(key)) {
+    throw new ApiError("معرّف العملية مطلوب لإعادة المحاولة بأمان", 400, "MUTATION_ID_REQUIRED");
+  }
+  return key;
 }

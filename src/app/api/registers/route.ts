@@ -15,7 +15,7 @@ export const GET = handler(async () => {
   const open = await db
     .select()
     .from(shifts)
-    .where(and(eq(shifts.tenantId, user.tenantId), eq(shifts.status, "open")))
+    .where(and(eq(shifts.tenantId, user.tenantId), eq(shifts.status, "open"), user.role === "cashier" ? eq(shifts.userId, user.id) : undefined))
     .orderBy(desc(shifts.openedAt));
   return ok({ registers, openShifts: open });
 });

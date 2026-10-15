@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Plus, Pencil, KeyRound } from "lucide-react";
-import { apiGet, apiPost, apiPatch } from "@/lib/client";
+import { apiCollection, apiPost, apiPatch } from "@/lib/client";
 import { ROLE_LABELS, type Role } from "@/lib/permissions";
 import { Btn, Field, Input, Select, Modal, PageHeader, TableShell, Badge, EmptyState, Loading, useToast } from "@/components/ui";
 
@@ -23,12 +23,12 @@ export default function UsersPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const d = await apiGet<{ items: UserRow[] }>("/api/users");
+      const d = await apiCollection<UserRow>("/api/users");
       setItems(d.items);
     } catch (e) { toast.push("error", e instanceof Error ? e.message : "تعذر التحميل"); }
     finally { setLoading(false); }
   }, [toast]);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { const timer = setTimeout(() => void load(), 0); return () => clearTimeout(timer); }, [load]);
 
   async function save(e: React.FormEvent) {
     e.preventDefault();

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from "recharts";
 import { apiGet } from "@/lib/client";
-import { fmtMoney, fmtQty } from "@/lib/money";
+import { subMoney, fmtMoney, fmtQty } from "@/lib/money";
 import { Btn, Input, PageHeader, TableShell, StatCard, Loading, useToast } from "@/components/ui";
 import { TrendingUp, Banknote, Trash2, ReceiptText } from "lucide-react";
 
@@ -45,9 +45,9 @@ export default function ReportsPage() {
     } catch (e) { toast.push("error", e instanceof Error ? e.message : "تعذر التحميل"); }
     finally { setLoading(false); }
   }, [from, to, toast]);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { const timer = setTimeout(() => void load(), 0); return () => clearTimeout(timer); }, [load]);
 
-  const netRevenue = data ? Number(data.sales?.gross ?? 0) - Number(data.sales?.discounts ?? 0) - Number(data.sales?.returns ?? 0) : 0;
+  const netRevenue = data ? subMoney(subMoney(data.sales?.gross, data.sales?.discounts), data.sales?.returns) : 0;
 
   return (
     <div>
@@ -67,7 +67,7 @@ export default function ReportsPage() {
 
       {loading || !data ? <Loading /> : (
         <>
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <StatCard label="صافي المبيعات" value={fmtMoney(netRevenue)} sub={`${data.sales?.invoices ?? 0} فاتورة`} icon={<ReceiptText className="h-5 w-5" />} />
             <StatCard label="إجمالي الربح" value={fmtMoney(data.grossProfit)} sub={`تكلفة المباع ${fmtMoney(data.cogs)}`} icon={<TrendingUp className="h-5 w-5" />} tone="blue" />
             <StatCard label="نقدي / آجل" value={`${fmtMoney(data.sales?.cash ?? 0)}`} sub={`آجل: ${fmtMoney(data.sales?.credit ?? 0)}`} icon={<Banknote className="h-5 w-5" />} />
@@ -81,7 +81,7 @@ export default function ReportsPage() {
                 <div dir="ltr" className="h-56">
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
-                      <Pie data={data.byPayment} dataKey={(d: { total: string }) => Number(d.total)} nameKey="method" innerRadius={45} outerRadius={75} paddingAngle={2}>
+                      <Pie isAnimationActive={false} data={data.byPayment} dataKey={(d: { total: string }) => Number(d.total)} nameKey="method" innerRadius={45} outerRadius={75} paddingAngle={2}>
                         {data.byPayment.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
                       </Pie>
                       <Tooltip formatter={(v, name) => [`${Number(v).toLocaleString("en-US")} ر.ي`, METHOD_LABEL[String(name)] ?? name]} />
@@ -100,7 +100,7 @@ export default function ReportsPage() {
               </ul>
             </div>
 
-            <div className="lg:col-span-2">
+            <div className="min-w-0 lg:col-span-2">
               <h2 className="mb-3 font-bold">الأصناف الأكثر ربحاً ومبيعاً</h2>
               <TableShell head={["الصنف", "الكمية المباعة", "الإيراد", "الربح"]}>
                 {data.topProducts.map((p) => (
@@ -119,7 +119,7 @@ export default function ReportsPage() {
                 <div className="rounded-xl bg-white p-3 ring-1 ring-slate-200"><p className="text-xs text-slate-500">إجمالي الفواتير (قبل الخصم)</p><p className="font-bold tabnums">{fmtMoney(data.sales?.gross ?? 0)}</p></div>
                 <div className="rounded-xl bg-white p-3 ring-1 ring-slate-200"><p className="text-xs text-slate-500">الخصومات</p><p className="font-bold tabnums">{fmtMoney(data.sales?.discounts ?? 0)}</p></div>
                 <div className="rounded-xl bg-white p-3 ring-1 ring-slate-200"><p className="text-xs text-slate-500">المرتجعات</p><p className="font-bold tabnums text-red-600">{fmtMoney(data.sales?.returns ?? 0)}</p></div>
-                <div className="rounded-xl bg-white p-3 ring-1 ring-slate-200"><p className="text-xs text-slate-500">هامش الربح</p><p className="font-bold tabnums">{netRevenue > 0 ? `${((Number(data.grossProfit) / netRevenue) * 100).toFixed(1)}%` : "—"}</p></div>
+                <div className="rounded-xl bg-white p-3 ring-1 ring-slate-200"><p className="text-xs text-slate-500">هامش الربح</p><p className="font-bold tabnums">{Number(netRevenue) > 0 ? `${((Number(data.grossProfit) / Number(netRevenue)) * 100).toFixed(1)}%` : "—"}</p></div>
               </div>
             </div>
           </div>

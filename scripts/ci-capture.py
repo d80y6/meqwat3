@@ -6,7 +6,9 @@ import subprocess, sys
 result = subprocess.run(sys.argv[1:], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 print(result.stdout)
 if result.returncode:
-    for line in result.stdout.splitlines()[-35:]:
+    lines = result.stdout.splitlines()
+    important = [line for line in lines if any(word in line.lower() for word in ['error', 'warning', 'failed', 'because', 'exception'])]
+    for line in (important + lines[-5:])[:10]:
         message = line.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
         print('::error::' + message)
 sys.exit(result.returncode)

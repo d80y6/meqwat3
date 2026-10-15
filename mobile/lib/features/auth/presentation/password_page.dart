@@ -17,8 +17,8 @@ class _PasswordPageState extends State<PasswordPage> {
     setState(()=>_busy=true);
     final api=context.read<ApiClient>();
     try {
-      if(widget.change){await api.post('/api/auth/change-password',{'currentPassword':_current.text,'password':_password.text});api.clearSession();}
-      else if(_reset){final input=_token.text.trim();final token=Uri.tryParse(input)?.queryParameters['token']??input;await api.post('/api/auth/reset-password',{'token':token,'password':_password.text});api.clearSession();}
+      if(widget.change){await api.post('/api/auth/change-password',{'currentPassword':_current.text,'password':_password.text});await api.clearSession();}
+      else if(_reset){final input=_token.text.trim();final token=Uri.tryParse(input)?.queryParameters['token']??input;await api.post('/api/auth/reset-password',{'token':token,'password':_password.text});await api.clearSession();}
       else {await api.post('/api/auth/forgot-password',{'email':_email.text.trim()});}
       if(mounted)setState(()=>_message=widget.change||_reset?'تم تغيير كلمة المرور — ارجع لتسجيل الدخول':'إذا كان البريد مسجلاً فستصلك تعليمات الاستعادة');
     } catch(e){if(mounted)setState(()=>_message=e is ApiException?e.message:'تعذر الاتصال');}

@@ -4,6 +4,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'core/api/api_client.dart';
+import 'core/auth/session_vault.dart';
 import 'core/database/app_database.dart';
 import 'core/sync/sync_repository.dart';
 import 'features/auth/bloc/auth_bloc.dart';
@@ -42,11 +43,13 @@ Future<void> main() async {
   final db = await AppDatabase.open();
   final api = ApiClient(
     store: db,
+    vault: SessionVault(const String.fromEnvironment('MEQWAT_API',defaultValue:'https://app.meqwat.example')),
     baseUrl: const String.fromEnvironment(
       'MEQWAT_API',
       defaultValue: 'https://app.meqwat.example',
     ),
   );
+  await api.restoreSession();
   final sync = SyncRepository(api: api, db: db);
   final posRepo = PosRepository(api: api, db: db);
   final purchasesRepo = PurchasesRepository(api: api, db: db);
@@ -222,6 +225,7 @@ class _HomeShellState extends State<HomeShell> {
                 ListTile(title:const Text('الاشتراك'),onTap:()=>Navigator.push(context,MaterialPageRoute<void>(builder:(_)=>const SubscriptionPage()))),
               ],
               ListTile(leading:const Icon(Icons.sync_problem),title:const Text('العمليات المحلية والتعارضات'),onTap:()=>Navigator.push(context,MaterialPageRoute<void>(builder:(_)=>const OutboxPage()))),
+              if(context.read<ApiClient>().offlineSession)const ListTile(leading:Icon(Icons.offline_bolt),title:Text('جلسة محلية مؤقتة — العمليات تنتظر تأكيد الخادم')),
               const Divider(),
               Padding(
                 padding: const EdgeInsets.all(12),

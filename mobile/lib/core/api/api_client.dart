@@ -1,5 +1,6 @@
 import 'dart:convert';
 import '../database/app_database.dart';
+import '../auth/session_vault.dart';
 import 'package:uuid/uuid.dart';
 import 'package:http/http.dart' as http;
 
@@ -16,18 +17,22 @@ class ApiException implements Exception {
 }
 
 class ApiClient {
-  ApiClient({required this.baseUrl, this.store, http.Client? client}) : _client = client ?? http.Client();
+  ApiClient({required this.baseUrl, this.store, this.vault, http.Client? client}) : _client = client ?? http.Client();
 
   final String baseUrl;
   final AppDatabase? store;
+  final SessionVault? vault;
+  bool offlineSession=false;
   final http.Client _client;
   String? _cookie;
   Future<bool>? _refreshing;
   int _generation = 0;
-  void clearSession() { _cookie = null; _generation++; _refreshing = null; }
+  Future<void> clearSession() async { _cookie = null; _generation++; _refreshing = null; offlineSession=false; await vault?.clear(); }
+  Future<void> restoreSession() async {try{_cookie=await vault?.cookie();}catch(_){_cookie=null;}}
+
 
   Future<void> login(String email, String password) async {
-    clearSession();
+    await clearSession();
     final generation = _generation;
     final res = await _client.post(
       Uri.parse('$baseUrl/api/auth/login'),
@@ -35,7 +40,7 @@ class ApiClient {
       body: jsonEncode({'email': email, 'password': password}),
     );
     if (generation != _generation) throw ApiException('تغيرت الجلسة');
-    _storeCookie(res);
+    await _storeCookie(res);
     _unwrap(res);
   }
 
@@ -90,7 +95,7 @@ class ApiClient {
     final streamed = await _client.send(req);
     final res = await http.Response.fromStream(streamed);
     if (generation != _generation) throw ApiException('تغيرت الجلسة');
-    _storeCookie(res);
+    await _storeCookie(res);
     if (res.statusCode == 401 && !retried && (!path.contains('/api/auth/') || path == '/api/auth/me')) {
       final okRefresh = await _refresh();
       if (okRefresh) return _request(method, path, body: body, retried: true);
@@ -113,14 +118,14 @@ class ApiClient {
         headers: {if (_cookie != null) 'Cookie': _cookie!},
       );
       if (generation != _generation) return false;
-      _storeCookie(res);
+      await _storeCookie(res);
       return res.statusCode == 200;
     } catch (_) {
       return false;
     }
   }
 
-  void _storeCookie(http.Response res) {
+  Future<void> _storeCookie(http.Response res) async {
     final raw = res.headers['set-cookie'];
     if (raw != null && raw.isNotEmpty) {
       final pairs = <String,String>{};
@@ -132,6 +137,7 @@ class ApiClient {
         else { pairs[match.group(1)!] = match.group(2)!; }
       }
       _cookie = pairs.entries.map((e) => '${e.key}=${e.value}').join('; ');
+      await vault?.saveCookie(_cookie!.isEmpty?null:_cookie);
     }
   }
 

@@ -11,4 +11,8 @@ if result.returncode:
     for line in (important + lines[-5:])[:10]:
         message = line.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
         print('::error::' + message)
+else:
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    if lines:
+        print('::notice::' + lines[-1].replace('%', '%25').replace('\r', '%0D'))
 sys.exit(result.returncode)

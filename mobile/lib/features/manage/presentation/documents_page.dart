@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../../core/api/api_client.dart';
 import '../../../core/money/money.dart';
+import 'receipt_pdf.dart';
 /// Read-only posted documents; corrections are explicit server-authorized returns.
 class DocumentsPage extends StatefulWidget{
  const DocumentsPage({super.key,this.purchase=false,this.canReturn=false});final bool purchase,canReturn;
@@ -26,6 +27,7 @@ class _DocumentsPageState extends State<DocumentsPage>{
  @override
  Widget build(BuildContext context)=>Scaffold(appBar:AppBar(title:Text(widget.purchase?'فواتير الشراء':'سجل المبيعات'),actions:[IconButton(onPressed:_load,icon:const Icon(Icons.refresh))]),body:_loading?const Center(child:CircularProgressIndicator()):ListView(padding:const EdgeInsets.all(12),children:[
   if(_error!=null)Text(_error!),for(final r in _rows)Card(child:ExpansionTile(title:Text('#${r['invoiceNo']??r['id']} · ${r['totalAmount']} ر.ي'),subtitle:Text('${r['customerName']??r['supplierName']??'نقدي'}'),children:[Padding(padding:const EdgeInsets.all(12),child:SelectableText(_receipt(r))),
+   TextButton(onPressed:()async{try{await printReceipt(r,purchase:widget.purchase);}catch(e){if(mounted)setState(()=>_error='تعذرت الطباعة: $e');}},child:const Text('طباعة إيصال PDF — ٨٠ مم')),
    TextButton(onPressed:()=>Clipboard.setData(ClipboardData(text:_receipt(r))),child:const Text('نسخ الإيصال')),
    if(widget.canReturn)TextButton(onPressed:()=>_return(r),child:const Text('إرجاع بنود (لا تعديل للفاتورة الأصلية)')),
   ])),

@@ -17,20 +17,28 @@ This is a new implementation checkpoint after PR #3's original audit. **NOT READ
 ## Verification checkpoint (updated as executed)
 - Local TypeScript/lint/build PASS during implementation.
 - Local Vitest: 67 PASS / 8 files at checkpoint.
-- Local HTTP/browser: 31 PASS before subsequent billing/user-limit/catalog tests and final edits; final rerun pending.
+- Local HTTP/browser: **35/35 PASS**, including billing, user-limit concurrency, >200 catalog and safe cancellation.
 - All Dart lib/test files parsed without syntax errors using tree-sitter-dart. **Not Flutter analyze, tests or compilation.**
-- Prior PR commit f1071d0 hosted CI: Docker image build PASS; web failed a non-hermetic APP_ORIGIN unit test; mobile failed scaffolding before analysis. Fixes now scope test origin, create scaffolding without pub resolution, remove unused intl constraint, and expose build diagnostics through check annotations. New hosted run pending.
-- Migrations 0007 and 0008 applied to isolated `meqwat_completion_test`; repeat/fresh verification and recovery drill to be recorded.
+- Prior PR commit f1071d0 hosted CI: Docker image build PASS; web failed a non-hermetic APP_ORIGIN unit test; mobile failed scaffolding before analysis. Fixes now scope test origin, create scaffolding without pub resolution, remove unused intl constraint, and expose build diagnostics through check annotations. Subsequent hosted run **38792146565 / 9d78568** passed all four jobs: web, Docker restricted runtime, mobile analyze/test/debug APK, and Android persistence acceptance.
+- Migrations 0000–0008 applied on fresh isolated CI databases. Actual backup/restore drill passed in hosted web CI, comparing complete-row hashes/counts of all public tables.
 
 ## Not yet completed
-- Native compilation/device acceptance, including SQLite upgrade, storage failures, restart and cross-account behavior; no claim that new mobile screens have run.
-- Secure persisted sessions and authenticated cold-offline start; full conflict edit/reconcile flow; physical printing, signed release/store distribution.
-- Actual SMTP/staging-managed deployment and off-site/PITR/RPO/RTO acceptance. CI recovery drill added; not yet executed at this checkpoint.
+- Whole-app online/offline device journeys and every native screen are not yet certified. Emulator acceptance proved real SQLite reopen/owner isolation, durable request IDs, legacy quarantine and OS secure storage. Flutter analysis/unit tests/APK passed; this is not a full physical-device acceptance suite.
+- Secure session persistence and an eight-hour bounded last-verified offline identity are implemented (shortened by subscription expiry); server authorization remains authoritative on sync. Safe cancellation tombstones unposted operations and preserves local originals for manual correction; committed operations cannot be cancelled. Physical printer acceptance and release signing/store distribution remain external gates. PDF receipt flow is in final verification.
+- Actual SMTP/staging-managed deployment and off-site/PITR/RPO/RTO acceptance. CI recovery drill passed; off-site/PITR/RPO/RTO and managed-host staging remain unproved.
 - Historical purchase-return reconciliation and full tenant accounting allocation/reversal/GL/consignment/multi-branch requirements. These cannot be replaced with fabricated historical data or silently invented accounting policy.
 - Complete accessibility/load/security hardening; remaining development-only dependency advisories.
 
 ## Durable next actions
-1. Rebuild latest server, run all local Vitest and Playwright tests (including billing, entitlement concurrency and >200 catalog).
-2. Commit/push on the session branch to exercise hosted Flutter/web/recovery/container CI, inspect diagnostics, fix and rerun.
+1. Final CI rerun for PDF printing and pruned runtime dependencies; local latest backend tests are green.
+2. Inspect final hosted results and fix any new failure; keep the same branch/PR.
 3. Obtain physical/emulated-device acceptance and staging mail/deployment access; close remaining business/accounting decisions and workflows.
 4. Update this document and release gate matrix with actual outcomes. Do not label all requested work complete.
+
+
+## Security and release details
+- Mobile sessions use OS secure storage, origin-specific keys, logout deletion and bounded cached identity; no passwords are persisted. Offline records remain pending and can be rejected after server-side revocation.
+- SQLite v2 preserves existing outbox records and adds owner-bound HTTP retry keys/caches. Confirmed receipt recording and queue acknowledgement are atomic.
+- Android Gradle/AGP/Kotlin updated to supported versions; release INTERNET permission added, cleartext/automatic backup disabled, stable `com.meqwat.mobile` identity. Release no longer falls back to debug signing: private `android/key.properties` is required.
+- Runtime Docker dependencies are being pruned to production-only; development advisory chain remains build-time risk, not a clean full audit.
+- Application-level mobile lock screen/biometric policy, complete post-settlement accounting and consignment/branch policy require explicit acceptance rather than invented guarantees.

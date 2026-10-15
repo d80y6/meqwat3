@@ -75,7 +75,9 @@ class ApiClient {
     final durable=RegExp(r'^/api/(inventory|payments|expenses)$').hasMatch(path) || RegExp(r'^/api/(sales|purchases)/[^/]+/return$').hasMatch(path);
     final owner=store?.ownerKey;
     if(durable && owner==null)throw ApiException('جلسة متجر مطلوبة لحفظ العملية');
+    final generation=_generation;
     final id=durable?await store!.requestId(path,body):const Uuid().v4();
+    if(generation!=_generation||(durable&&owner!=store?.ownerKey))throw ApiException('تغيرت الجلسة قبل إرسال العملية');
     try {
       final result=await _request('POST',path,body:{...body,'clientMutationId':id});
       if(durable)await store!.confirmRequest(owner!,path,body);
@@ -88,6 +90,7 @@ class ApiClient {
 
   Future<Map<String, dynamic>> _request(String method, String path, {Map<String, dynamic>? body, bool retried = false}) async {
     final generation = _generation;
+    final sentCookie = _cookie;
     final req = http.Request(method, Uri.parse('$baseUrl$path'));
     req.headers['Content-Type'] = 'application/json';
     if (_cookie != null) req.headers['Cookie'] = _cookie!;
@@ -97,6 +100,7 @@ class ApiClient {
     if (generation != _generation) throw ApiException('تغيرت الجلسة');
     await _storeCookie(res);
     if (res.statusCode == 401 && !retried && (!path.contains('/api/auth/') || path == '/api/auth/me')) {
+      if(sentCookie!=_cookie && _cookie!=null)return _request(method,path,body:body,retried:true);
       final okRefresh = await _refresh();
       if (okRefresh) return _request(method, path, body: body, retried: true);
     }

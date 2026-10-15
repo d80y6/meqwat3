@@ -54,8 +54,22 @@ not compilation or device evidence. GitHub CI is being exercised for dependency 
 analyze, tests and a debug APK. Do not distribute until the actual run passes and device
 acceptance closes. Use the run status recorded in docs/audit/COMPLETION-STATUS.md.
 
-Still required: secure persistent session/offline unlocking policy, durable device restart
-and multi-user acceptance, storage-full/conflict repair UX, actual thermal printing, signed
-release/store distribution and production endpoint/TLS validation. Receipt text copying is
-not printer integration. API base URL must be supplied via MEQWAT_API; the default is a
+OS secure storage retains sessions; cold offline reopen accepts a last-verified identity for
+at most eight hours, capped by subscription expiry. Server reauthorization still controls
+postings. This is not biometric/app-PIN authentication.
+
+Still required: full whole-app multi-user acceptance, storage-full UX and actual thermal printing, signed
+release/store distribution and production endpoint/TLS validation. Arabic 80mm PDF receipts use
+a bundled OFL Amiri font and the OS print dialog; printer hardware is not certified. API base URL must be supplied via MEQWAT_API; the default is a
 placeholder. No credentials or production endpoints are embedded.
+
+
+## Android release
+Android sources are tracked; CI generates only missing wrapper/icon scaffolding. Tested
+build configuration uses Gradle 8.14.3, AGP 8.11.1, Kotlin 2.2.20 and Java 17. Review the
+`com.meqwat.mobile` application ID before first publication. Release builds require a private
+`android/key.properties` (storeFile, storePassword, keyAlias, keyPassword); it and keystores
+are ignored. Never put signing credentials into chat or source control. There is no debug-key
+fallback for release. Supply `--dart-define=MEQWAT_API=https://YOUR_AUTHORIZED_ORIGIN`.
+
+Latest executed hosted evidence: see `docs/audit/COMPLETION-STATUS.md` in the repository root.

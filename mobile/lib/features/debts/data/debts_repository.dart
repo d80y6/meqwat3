@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:uuid/uuid.dart';
 
 import '../../../core/api/api_client.dart';
+import '../../../core/money/money.dart';
 import '../../../core/database/app_database.dart';
 
 /// Debts & liabilities. Payments are queued through the same outbox as
@@ -30,6 +31,7 @@ class DebtsRepository {
     required String amount,
     required String label,
   }) async {
+    if(Money.cents(amount)<=0)throw const FormatException('المبلغ يجب أن يكون موجباً');
     final mutationId = _uuid.v4();
     await db.enqueueOutbox({
       'client_mutation_id': mutationId,

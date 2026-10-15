@@ -77,6 +77,7 @@ class DebtsBloc extends Bloc<DebtsEvent, DebtsState> {
 
   final DebtsRepository repository;
   final SyncRepository sync;
+  bool _saving=false;
 
   Future<void> _load(DebtsEvent event, Emitter<DebtsState> emit) async {
     try {
@@ -95,6 +96,8 @@ class DebtsBloc extends Bloc<DebtsEvent, DebtsState> {
   }
 
   Future<void> _onPayment(DebtPaymentSubmitted event, Emitter<DebtsState> emit) async {
+    if(_saving)return;_saving=true;
+    try {
     await repository.queuePayment(
       kind: event.kind,
       customerId: event.kind == 'customer_payment' ? event.partyId : null,
@@ -110,5 +113,7 @@ class DebtsBloc extends Bloc<DebtsEvent, DebtsState> {
     } catch (_) {
       emit(state.copyWith(pendingCount: await repository.pendingCount()));
     }
+    }catch(_){emit(state.copyWith(message:'تعذر حفظ السداد محلياً — لم يُرسل. أعد المحاولة بعد مراجعة الطابور'));}
+    finally{_saving=false;}
   }
 }

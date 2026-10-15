@@ -12,7 +12,7 @@ class _CashPageState extends State<CashPage>{
  @override
  void initState(){super.initState();_load();}
  Future<void> _load()async{try{final api=context.read<ApiClient>();final regs=await api.get('/api/registers');final shifts=await api.collection('/api/shifts');final expenses=await api.collection('/api/expenses');if(mounted)setState((){_registers=(regs['registers'] as List).cast<Map<String,dynamic>>();_shifts=shifts;_expenses=expenses;});}catch(e){if(mounted)setState(()=>_error=e.toString());}finally{if(mounted)setState(()=>_loading=false);}}
- Future<void> _form(String action,{String? path,Map<String,dynamic>? shift})async{await Navigator.push(context,MaterialPageRoute<void>(builder:(_)=>CashForm(action:action,registers:_registers,shifts:_shifts.where((s)=>s['status']=='open').toList(),shift:shift)));await _load();}
+ Future<void> _form(String action,{Map<String,dynamic>? shift})async{await Navigator.push(context,MaterialPageRoute<void>(builder:(_)=>CashForm(action:action,registers:_registers,shifts:_shifts.where((s)=>s['status']=='open').toList(),shift:shift)));await _load();}
  @override
  Widget build(BuildContext context)=>Scaffold(appBar:AppBar(title:const Text('الصناديق والورديات'),actions:[IconButton(onPressed:_load,icon:const Icon(Icons.refresh))]),body:_loading?const Center(child:CircularProgressIndicator()):ListView(padding:const EdgeInsets.all(16),children:[
   if(_error!=null)Text(_error!),Wrap(spacing:8,children:[FilledButton(onPressed:()=>_form('open'),child:const Text('فتح وردية')),FilledButton(onPressed:()=>_form('expense'),child:const Text('مصروف')),TextButton(onPressed:()=>_form('register'),child:const Text('صندوق جديد'))]),

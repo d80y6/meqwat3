@@ -161,7 +161,7 @@ class _HomeShellState extends State<HomeShell> {
   int _index = 0;
   Timer? _timer;
   @override
-  void initState(){super.initState();_timer=Timer.periodic(const Duration(seconds:30),(_){if(mounted)context.read<SyncRepository>().syncNow().catchError((Object _) => const SyncOutcome());});}
+  void initState(){super.initState();_timer=Timer.periodic(const Duration(seconds:30),(_){if(mounted)context.read<PosBloc>().add(const PosSyncRequested());});}
   @override
   void dispose(){_timer?.cancel();super.dispose();}
 

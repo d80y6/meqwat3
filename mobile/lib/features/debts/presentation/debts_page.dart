@@ -1,3 +1,5 @@
+import 'dart:async';
+import '../../../core/money/money.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
@@ -75,36 +77,45 @@ class DebtsPage extends StatelessWidget {
     );
   }
 
-  void _paymentDialog(BuildContext context, Map<String, dynamic> party, String kind, String actionLabel) {
+  Future<void> _paymentDialog(BuildContext context, Map<String, dynamic> party, String kind, String actionLabel) async {
     final amountCtrl = TextEditingController(text: party['balance'].toString());
-    showDialog<void>(
+    final bloc=context.read<DebtsBloc>();
+    var saving=false;
+    String? error;
+    await showDialog<void>(
       context: context,
-      builder: (dialogCtx) => AlertDialog(
-        title: Text('$actionLabel — ${party['name']}'),
-        content: TextField(
-          controller: amountCtrl,
-          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          decoration: const InputDecoration(labelText: 'المبلغ (ر.ي)'),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogCtx), child: const Text('إلغاء')),
-          FilledButton(
-            onPressed: () {
-              final amount = amountCtrl.text.trim();
-              if (amount.isNotEmpty) {
-                context.read<DebtsBloc>().add(DebtPaymentSubmitted(
-                      kind: kind,
-                      partyId: party['id'].toString(),
-                      amount: amount,
-                      label: '$actionLabel ${party['name']} — $amount ر.ي',
-                    ));
-              }
-              Navigator.pop(dialogCtx);
-            },
-            child: Text(actionLabel),
+      barrierDismissible:false,
+      builder: (dialogCtx) => StatefulBuilder(builder:(dialogCtx,setDialogState)=>PopScope(
+        canPop:!saving,
+        child:AlertDialog(
+          title: Text('$actionLabel — ${party['name']}'),
+          content: TextField(
+            controller: amountCtrl, enabled:!saving,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: InputDecoration(labelText: 'المبلغ (ر.ي)',errorText:error),
           ),
-        ],
-      ),
+          actions: [
+            TextButton(onPressed: saving?null:() => Navigator.pop(dialogCtx), child: const Text('إلغاء')),
+            FilledButton(
+              onPressed: saving?null:() async {
+                final amount=amountCtrl.text.trim();
+                try {
+                  if(Money.cents(amount)<=0 || Money.cents(amount)>Money.cents(party['balance'].toString()))throw const FormatException();
+                } catch(_) {setDialogState(()=>error='أدخل مبلغاً موجباً لا يتجاوز الرصيد');return;}
+                setDialogState((){saving=true;error=null;});
+                final saved=Completer<bool>();
+                bloc.add(DebtPaymentSubmitted(kind:kind,partyId:party['id'].toString(),amount:amount,label:'$actionLabel ${party['name']} — $amount ر.ي',saved:saved));
+                final accepted=await saved.future;
+                if(!dialogCtx.mounted)return;
+                if(accepted){Navigator.pop(dialogCtx);}
+                else{setDialogState((){saving=false;error='لم يُحفظ السداد. راجع الطابور ثم أعد المحاولة.';});}
+              },
+              child: Text(saving?'جارٍ الحفظ…':actionLabel),
+            ),
+          ],
+        ),
+      )),
     );
+    amountCtrl.dispose();
   }
 }

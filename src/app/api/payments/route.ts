@@ -21,7 +21,7 @@ export const GET = handler(async (req: Request) => {
       .leftJoin(customers, eq(payments.customerId, customers.id))
       .leftJoin(suppliers, eq(payments.supplierId, suppliers.id))
       .where(where)
-      .orderBy(desc(payments.createdAt))
+      .orderBy(desc(payments.createdAt), payments.id)
       .limit(limit)
       .offset(offset),
     db.select({ c: count() }).from(payments).where(where),

@@ -27,7 +27,7 @@ export const GET = handler(async (req: Request) => {
       .from(sales)
       .leftJoin(customers, eq(sales.customerId, customers.id))
       .where(where)
-      .orderBy(desc(sales.saleDate))
+      .orderBy(desc(sales.saleDate), sales.id)
       .limit(limit)
       .offset(offset),
     db.select({ c: count() }).from(sales).where(where),

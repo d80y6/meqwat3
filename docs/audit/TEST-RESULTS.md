@@ -1,6 +1,17 @@
-# Executed verification — final checkpoint, 2026-10-15
+# Executed verification — checkpoint history, 2026-10-15
 
 **No production database, infrastructure, mail account or credentials were used.** PASS means executed evidence, not inspection. Local PostgreSQL was a native 16.4 server, not a mock. Application HTTP/browser tests used the restricted `meqwat_app` role; owner connections were used only for isolated fixture setup, migrations and independent assertions.
+
+## Admin/mobile completion checkpoint
+
+- Local latest backend: **67 Vitest tests / 8 files PASS**, typecheck/build PASS, lint 0 errors / 1 warning.
+- Local HTTP/browser: **37/37 PASS (54.4s)**, including >200 user pagination, whole-ledger debt totals/disabled balances/tenant and role isolation, safe offline cancellation, manual platform billing, and concurrent user limits.
+- One initial 36/37 run hit the existing signup rate limit accumulated by repeated local suites. Only the guarded disposable loopback test DB's limiter buckets were cleared; the full rerun passed. Production limits were not weakened.
+- Hosted **55aca77 / [38793293945](https://github.com/d80y6/meqwat3/actions/runs/38793293945)**: all four jobs PASS — web/recovery, production-only Docker/restricted runtime, Flutter analyze/tests/APK (including Arabic PDF generation), Android real SQLite/secure-storage persistence.
+- Additional payment-dialog/fractional-cart edits are covered only once subsequent PR checks pass. Refer to PR #3 checks for later runs; do not extend an earlier SHA's proof to later source changes.
+- No external SMTP, production deployment, signed app distribution or physical-printer acceptance is claimed.
+
+## Original audit checkpoint (historical, superseded where stated above)
 
 ## Baseline → final
 

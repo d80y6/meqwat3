@@ -13,6 +13,11 @@ class Money {
     if (n > max) throw const FormatException('القيمة تتجاوز الحد المسموح');
     return n;
   }
+  static int quantity(String value) => _scaled(value,3,BigInt.parse('999999999999')).toInt();
+  static String formatQuantity(int millis) {
+    if(millis<0 || millis>999999999999)throw const FormatException('الكمية تتجاوز الحد');
+    return '${millis ~/ 1000}.${(millis % 1000).toString().padLeft(3,'0')}';
+  }
   static int cents(String value) => _scaled(value, 2, BigInt.parse('99999999999999')).toInt();
   static String format(int cents) {
     if (cents.abs() > 99999999999999) throw const FormatException('القيمة تتجاوز الحد المسموح');

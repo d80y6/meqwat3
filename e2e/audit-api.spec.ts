@@ -265,4 +265,29 @@ test.describe("Independent audit: real HTTP and real PostgreSQL", () => {
     expect((await db.query('select 1 from sales where client_mutation_id=$1',[postedKey])).rowCount).toBe(1);
   });
 
+  test('user pagination terminates and never repeats the first page',async()=>{
+    await db.query("insert into users(tenant_id,name,email,password_hash,role,is_active) select $1,'paged-user-'||n,n||'-'||$2||'@test.ye','not-a-login-hash','cashier',false from generate_series(1,205) n",[tenants[1],stamp]);
+    const first=(await (await b.get('/api/users?limit=200')).json()).data;
+    const second=(await (await b.get('/api/users?limit=200&offset=200')).json()).data;
+    expect(first.items).toHaveLength(200);expect(first.total).toBeGreaterThan(200);
+    expect(first.items.length+second.items.length).toBe(first.total);
+    expect(new Set([...first.items,...second.items].map((u:{id:string})=>u.id)).size).toBe(first.total);
+    expect(first.items[0]).not.toHaveProperty('passwordHash');
+  });
+  test('whole-ledger debt totals include disabled accounts beyond 200 and stay tenant scoped',async({request})=>{
+    expect((await request.get('/api/debts/summary')).status()).toBe(401);
+    await db.query("insert into customers(tenant_id,name,balance,is_active) select $1,'summary-customer-'||n,1,n<>205 from generate_series(1,205) n",[tenants[1]]);
+    const disabled=(await db.query("insert into suppliers(tenant_id,name,balance,is_active) values($1,'disabled payable',0.20,false) returning id",[tenants[1]])).rows[0].id;
+    const expected=async()=> (await db.query("select (select coalesce(sum(balance),0)::text from customers where tenant_id=$1 and balance>0) receivables,(select coalesce(sum(balance),0)::text from suppliers where tenant_id=$1 and balance>0) payables",[tenants[1]])).rows[0];
+    expect((await (await b.get('/api/debts/summary')).json()).data).toEqual(await expected());
+    const debtList=(await (await b.get('/api/customers?debt=1&limit=200&offset=200')).json()).data;
+    expect(debtList.total).toBeGreaterThan(200);
+    expect((await (await b.get('/api/suppliers?debt=1')).json()).data.items.some((p:{id:string})=>p.id===disabled)).toBe(true);
+    expect((await b.post('/api/payments',{data:{kind:'supplier_payment',supplierId:disabled,amount:'0.10',clientMutationId:randomUUID()}})).status()).toBe(201);
+    expect((await db.query('select balance::text from suppliers where id=$1',[disabled])).rows[0].balance).toBe('0.10');
+    expect((await (await b.get('/api/debts/summary')).json()).data).toEqual(await expected());
+    const limited=await login(`inactive-${stamp}@test.ye`);
+    try {expect((await limited.get('/api/debts/summary')).status()).toBe(403);} finally {await limited.dispose();}
+  });
+
 });

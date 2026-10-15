@@ -16,7 +16,7 @@ export const GET = handler(async (req: Request) => {
   if (search) conds.push(ilike(products.name, `%${escapeIlike(search)}%`));
   if (activeOnly) conds.push(eq(products.isActive, true));
   const [rows, total] = await Promise.all([
-    db.select().from(products).where(and(...conds)).orderBy(desc(products.createdAt)).limit(limit).offset(offset),
+    db.select().from(products).where(and(...conds)).orderBy(desc(products.createdAt), products.id).limit(limit).offset(offset),
     db.select({ c: count() }).from(products).where(and(...conds)),
   ]);
   return ok({ items: rows, total: total[0]?.c ?? 0 });

@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { HandCoins, Wallet, Truck } from "lucide-react";
-import { apiCollection, apiPost } from "@/lib/client";
-import { fmtMoney, addMoney, subMoney } from "@/lib/money";
+import { apiCollection, apiGet, apiPost } from "@/lib/client";
+import { fmtMoney, subMoney } from "@/lib/money";
 import { Btn, Field, Input, Modal, PageHeader, TableShell, Badge, EmptyState, Loading, StatCard, useToast } from "@/components/ui";
 
 interface Party { id: string; name: string; phone: string | null; balance: string; creditLimit?: string }
@@ -22,6 +22,7 @@ export default function DebtsPage() {
   const [customers, setCustomers] = useState<Party[]>([]);
   const [suppliers, setSuppliers] = useState<Party[]>([]);
   const [payments, setPayments] = useState<PaymentRow[]>([]);
+  const [totals, setTotals] = useState({receivables:"0",payables:"0"});
   const [loading, setLoading] = useState(true);
   const [payTarget, setPayTarget] = useState<{ party: Party; kind: "customer_payment" | "supplier_payment" } | null>(null);
   const [payAmount, setPayAmount] = useState("");
@@ -29,11 +30,13 @@ export default function DebtsPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [c, s, p] = await Promise.all([
+      const [c, s, p, summary] = await Promise.all([
         apiCollection<Party>("/api/customers?debt=1&limit=200"),
         apiCollection<Party>("/api/suppliers?debt=1&limit=200"),
         apiCollection<PaymentRow>("/api/payments?limit=50"),
+        apiGet<{receivables:string;payables:string}>("/api/debts/summary"),
       ]);
+      setTotals(summary);
       setCustomers(c.items);
       setSuppliers(s.items);
       setPayments(p.items);
@@ -42,8 +45,8 @@ export default function DebtsPage() {
   }, [toast]);
   useEffect(() => { const timer = setTimeout(() => void load(), 0); return () => clearTimeout(timer); }, [load]);
 
-  const totalReceivables = customers.reduce((s, c) => addMoney(s, c.balance), "0");
-  const totalPayables = suppliers.reduce((s, c) => addMoney(s, c.balance), "0");
+  const totalReceivables = totals.receivables;
+  const totalPayables = totals.payables;
 
   async function submitPayment() {
     if (!payTarget) return;

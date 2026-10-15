@@ -21,7 +21,7 @@ export const GET = handler(async (req: Request) => {
       .from(purchases)
       .innerJoin(suppliers, eq(purchases.supplierId, suppliers.id))
       .where(where)
-      .orderBy(desc(purchases.purchaseDate))
+      .orderBy(desc(purchases.purchaseDate), purchases.id)
       .limit(limit)
       .offset(offset),
     db.select({ c: count() }).from(purchases).where(where),

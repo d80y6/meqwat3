@@ -1,7 +1,7 @@
 import { db } from "@/db";
 import { users, auditLogs } from "@/db/schema";
 import { and, eq, count, sql } from "drizzle-orm";
-import { ok, handler, requireTenantUser, ApiError } from "@/lib/api";
+import { ok, handler, requireTenantUser, parsePagination, ApiError } from "@/lib/api";
 import { hashPassword } from "@/lib/auth";
 import { getTenantPlan } from "@/lib/services";
 import type { Role } from "@/lib/permissions";
@@ -9,14 +9,16 @@ import type { Role } from "@/lib/permissions";
 export const dynamic = "force-dynamic";
 const TENANT_ROLES: Role[] = ["tenant_owner", "manager", "cashier"];
 
-export const GET = handler(async () => {
+export const GET = handler(async (req: Request) => {
   const user = await requireTenantUser("users:manage");
+  const { limit, offset } = parsePagination(req);
   const rows = await db
     .select({ id: users.id, name: users.name, email: users.email, phone: users.phone, role: users.role, isActive: users.isActive, lastLoginAt: users.lastLoginAt, createdAt: users.createdAt })
     .from(users)
     .where(eq(users.tenantId, user.tenantId))
-    .orderBy(users.createdAt);
-  return ok({ items: rows });
+    .orderBy(users.createdAt, users.id).limit(limit).offset(offset);
+  const [total] = await db.select({ c: count() }).from(users).where(eq(users.tenantId, user.tenantId));
+  return ok({ items: rows, total: total.c });
 });
 
 export const POST = handler(async (req: Request) => {

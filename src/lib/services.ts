@@ -537,7 +537,7 @@ export async function recordPayment(
           .where(and(eq(suppliers.id, input.supplierId), eq(suppliers.tenantId, ctx.tenantId)))
           .for("update")
           .limit(1);
-        if (!supplier || !supplier.isActive) throw new ApiError("المورّد غير موجود أو موقوف", 404);
+        if (!supplier) throw new ApiError("المورّد غير موجود", 404);
         if (amountCents > toCents(supplier.balance)) throw new ApiError("مبلغ السداد أكبر من المستحق للمورّد");
         const newBalance = fromCents(toCents(supplier.balance) - amountCents);
         await tx.update(suppliers).set({ balance: newBalance }).where(eq(suppliers.id, supplier.id));

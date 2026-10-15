@@ -7,6 +7,10 @@ void main() {
     expect(Money.format(Money.line('3', '4500.50')), '13501.50');
     expect(Money.format(Money.cents('0.30') - Money.cents('0.10')), '0.20');
   });
+  test('fractional cart quantity round trips without floats',(){
+    expect(Money.formatQuantity(Money.quantity('0.125')+Money.quantity('1')), '1.125');
+    expect(()=>Money.quantity('1.0001'), throwsFormatException);
+  });
   test('invalid precision and exponent input rejected', () {
     for (final value in ['0.001','1e3','-1','NaN','']) {
       expect(() => Money.cents(value), throwsFormatException);

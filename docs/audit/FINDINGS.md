@@ -1,5 +1,7 @@
 # Findings — final audit checkpoint, 2026-10-15
 
+> **Current-status amendment:** This original finding register is historical. See [completion status](COMPLETION-STATUS.md) and [current release gates](PRODUCTION-READINESS.md). Hosted container/isolated recovery and Flutter compilation/emulator persistence now PASS. Pagination, concurrent user entitlement and authoritative debt totals have been implemented and tested; full business/device acceptance and external release gates remain open.
+
 **Verdict: NOT READY.** Severity below is the original impact; FIXED means the described defect was corrected with the stated evidence, not that the entire subsystem is certified. No production systems/data were accessed. See [test results](TEST-RESULTS.md) for executed commands and [release gates](PRODUCTION-READINESS.md) for unfinished scope.
 
 ## Demonstrated defects remediated

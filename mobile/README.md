@@ -73,3 +73,10 @@ are ignored. Never put signing credentials into chat or source control. There is
 fallback for release. Supply `--dart-define=MEQWAT_API=https://YOUR_AUTHORIZED_ORIGIN`.
 
 Latest executed hosted evidence: see `docs/audit/COMPLETION-STATUS.md` in the repository root.
+
+
+## Checkout and recovery
+- Tap a product to add one unit; long-press it or tap its cart line to enter an exact fractional quantity (three decimals). Zero removes a line.
+- Sale, purchase and debt payment success means **durably queued**, not posted. Server results and conflicts remain visible in the outbox.
+- Debt dialogs retain input on storage failure. A successful save followed by a failed refresh must be reconciled from the outbox, not entered again.
+- Unposted conflicts may be cancelled with a reason through the server. Their original local records remain; corrections are a new entry. Already-posted documents cannot be cancelled by this mechanism.

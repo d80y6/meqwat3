@@ -83,7 +83,7 @@ jobs:
         with:
           channel: stable
           cache: true
-      - name: Generate Android scaffolding (platform folders are generated, not committed)
+      - name: Generate missing Android wrapper and icon scaffolding
         run: python ../scripts/ci-capture.py flutter create --no-pub --project-name meqwat_mobile --org com.meqwat --platforms=android .
       - name: Restore committed sources (in case create touched them)
         run: |

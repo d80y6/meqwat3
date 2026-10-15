@@ -1,4 +1,4 @@
-package com.example.meqwat_mobile
+package com.meqwat.mobile
 
 import io.flutter.embedding.android.FlutterActivity
 

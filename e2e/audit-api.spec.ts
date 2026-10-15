@@ -251,4 +251,18 @@ test.describe("Independent audit: real HTTP and real PostgreSQL", () => {
     await expect(page.locator('button',{hasText:'catalog-'})).toHaveCount(205);
   });
 
+  test('unposted cancellation tombstones the key and never reverses an existing posting',async()=>{
+    const me=(await (await b.get('/api/auth/me')).json()).data.user;
+    const key=randomUUID(),identity={tenantId:tenants[1],userId:me.id};
+    const cancel={...identity,type:'sale',clientMutationId:key,reason:'correct before posting'};
+    const data={...identity,operations:[{type:'sale',clientMutationId:key,payload:{paidAmount:'1',items:[{productId:productB,qty:'1',unitPrice:'1'}]}}]};
+    expect((await b.post('/api/sync/cancel',{data:cancel})).status()).toBe(200);
+    expect((await (await b.post('/api/sync/cancel',{data:cancel})).json()).data.status).toBe('cancelled');
+    const replay=(await (await b.post('/api/sync',{data})).json()).data.results[0];expect(replay.status).toBe('conflict');
+    expect((await db.query('select 1 from sales where client_mutation_id=$1',[key])).rowCount).toBe(0);
+    const postedKey=randomUUID();expect((await b.post('/api/sales',{data:{clientMutationId:postedKey,paidAmount:'1',items:[{productId:productB,qty:'1',unitPrice:'1'}]}})).status()).toBe(201);
+    expect((await (await b.post('/api/sync/cancel',{data:{...cancel,clientMutationId:postedKey}})).json()).data.status).toBe('already_processed');
+    expect((await db.query('select 1 from sales where client_mutation_id=$1',[postedKey])).rowCount).toBe(1);
+  });
+
 });

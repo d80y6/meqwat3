@@ -131,12 +131,25 @@ class AppDatabase {
   }
 
   Future<List<Map<String, Object?>>> pendingOutbox() async {
-    final rows = await _db.query('outbox', where: "status != 'conflict'", orderBy: 'created_at');
+    final rows = await _db.query('outbox', where: "status IN ('pending','error')", orderBy: 'created_at');
     // Legacy ownerless rows are retained for manual recovery, never auto-replayed.
     return rows.where(_owned).take(100).toList();
   }
   Future<List<Map<String, Object?>>> allOutbox() async =>
     (await _db.query('outbox', orderBy: 'created_at DESC')).where(_owned).toList();
+
+  Future<void> confirmOutbox(String id,Map<String,dynamic>? result) async {
+    final owner=ownerKey;
+    await _db.transaction((tx) async {
+      final rows=await tx.query('outbox',where:'client_mutation_id=?',whereArgs:[id]);
+      if(owner==null||owner!=ownerKey||rows.isEmpty||!_owned(rows.first))throw StateError('Queue owner mismatch');
+      if(result?['invoiceNo']!=null)await tx.insert('confirmed_sales',{
+        'id':result!['id'],'invoice_no':result['invoiceNo'],'total':result['totalAmount'],
+        'origin_mutation_id':id,'confirmed_at':DateTime.now().toIso8601String(),
+      },conflictAlgorithm:ConflictAlgorithm.ignore);
+      await tx.delete('outbox',where:'client_mutation_id=?',whereArgs:[id]);
+    });
+  }
 
   Future<void> deleteOutbox(String mutationId) =>
       _db.delete('outbox', where: 'client_mutation_id = ?', whereArgs: [mutationId]);
@@ -158,5 +171,5 @@ class AppDatabase {
   Future<void> recordConfirmed(Map<String, Object?> row) =>
       _db.insert('confirmed_sales', row, conflictAlgorithm: ConflictAlgorithm.ignore);
 
-  Future<int> pendingCount() async => (await allOutbox()).where((r) => r['status'] != 'conflict').length;
+  Future<int> pendingCount() async => (await allOutbox()).where((r) => r['status'] == 'pending' || r['status'] == 'error').length;
 }

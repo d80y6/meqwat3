@@ -2,7 +2,7 @@ import '../../../core/api/api_client.dart';
 import '../../../core/database/app_database.dart';
 
 /// Authentication against the same cookie-session API as the web app.
-/// The ApiClient holds the session cookies in memory for the app's lifetime.
+/// Secure OS storage retains cookies; bounded verified identity permits provisional offline reopen.
 class AuthRepository {
   AuthRepository({required this.api, required this.db});
   final AppDatabase db;
@@ -20,7 +20,7 @@ class AuthRepository {
       result=cached;api.offlineSession=true;
     }
     final user = result['user'] as Map<String, dynamic>;
-    if (user['mustChangePassword'] == true) throw ApiException('غيّر كلمة المرور المؤقتة من موقع المتجر أولاً');
+    if (user['mustChangePassword'] == true) throw ApiException('غيّر كلمة المرور المؤقتة من شاشة الدخول أولاً');
     if (user['tenantId'] == null) throw ApiException('حساب متجر مطلوب');
     await db.bindOwner(user['tenantId'] as String, user['id'] as String);
     if(!api.offlineSession)await api.vault?.verifiedIdentity(result);

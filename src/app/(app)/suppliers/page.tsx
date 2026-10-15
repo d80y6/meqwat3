@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Plus, Search, Pencil, HandCoins, Eye } from "lucide-react";
 import { apiGet, apiPost, apiPatch } from "@/lib/client";
-import { fmtMoney } from "@/lib/money";
+import { subMoney, fmtMoney } from "@/lib/money";
 import { Btn, Field, Input, Textarea, Modal, PageHeader, TableShell, Badge, EmptyState, Loading, useToast } from "@/components/ui";
 
 interface Supplier { id: string; name: string; phone: string | null; address: string | null; balance: string; notes: string | null }
@@ -34,7 +34,7 @@ export default function SuppliersPage() {
     } catch (e) { toast.push("error", e instanceof Error ? e.message : "تعذر التحميل"); }
     finally { setLoading(false); }
   }, [search, onlyDebt, toast]);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { const timer = setTimeout(() => void load(), 0); return () => clearTimeout(timer); }, [load]);
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
@@ -77,7 +77,7 @@ export default function SuppliersPage() {
 
   return (
     <div>
-      <PageHeader title="المورّدون والوكالات" subtitle="مزارعو ووكلاء القات ومستحقاتهم (شامل بضاعة بالأمانة)" actions={<Btn onClick={() => { setEditing(null); setForm(empty); setError(""); setModal(true); }}><Plus className="h-4 w-4" /> مورّد جديد</Btn>} />
+      <PageHeader title="المورّدون والوكالات" subtitle="مزارعو ووكلاء القات ومستحقات فواتير الشراء" actions={<Btn onClick={() => { setEditing(null); setForm(empty); setError(""); setModal(true); }}><Plus className="h-4 w-4" /> مورّد جديد</Btn>} />
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <div className="relative max-w-md flex-1">
           <Search className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
@@ -147,7 +147,7 @@ export default function SuppliersPage() {
                   {detail.recentPurchases.map((p) => (
                     <li key={p.id} className="flex justify-between py-2">
                       <span>{new Date(p.purchaseDate).toLocaleDateString("ar-YE")}</span>
-                      <span className="tabnums">الإجمالي {fmtMoney(p.totalAmount)} · مدفوع {fmtMoney(p.paidAmount)} · متبقٍ {fmtMoney(Number(p.totalAmount) - Number(p.paidAmount))}</span>
+                      <span className="tabnums">الإجمالي {fmtMoney(p.totalAmount)} · مدفوع {fmtMoney(p.paidAmount)} · متبقٍ {fmtMoney(subMoney(p.totalAmount, p.paidAmount))}</span>
                     </li>
                   ))}
                 </ul>

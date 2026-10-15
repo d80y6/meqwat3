@@ -44,7 +44,7 @@ Future<void> main() async {
   final purchasesRepo = PurchasesRepository(api: api, db: db);
   final inventoryRepo = InventoryRepository(api: api);
   final debtsRepo = DebtsRepository(api: api, db: db);
-  final authRepo = AuthRepository(api: api);
+  final authRepo = AuthRepository(api: api, db: db);
   runApp(MeqwatApp(
     api: api,
     sync: sync,
@@ -91,10 +91,6 @@ class MeqwatApp extends StatelessWidget {
       child: MultiBlocProvider(
         providers: [
           BlocProvider(create: (_) => AuthBloc(repository: authRepo)..add(const AuthSessionChecked())),
-          BlocProvider(create: (_) => PosBloc(repository: posRepo, sync: sync)..add(const PosStarted())),
-          BlocProvider(create: (_) => PurchasesBloc(repository: purchasesRepo, sync: sync)..add(const PurchasesStarted())),
-          BlocProvider(create: (_) => InventoryBloc(repository: inventoryRepo)..add(const InventoryStarted())),
-          BlocProvider(create: (_) => DebtsBloc(repository: debtsRepo, sync: sync)..add(const DebtsStarted())),
         ],
         child: MaterialApp(
           title: 'مقوات',
@@ -126,17 +122,20 @@ class AuthGate extends StatelessWidget {
   Widget build(BuildContext context) {
     return BlocBuilder<AuthBloc, AuthState>(
       builder: (context, state) {
-        if (state is AuthAuthenticated) return const HomeShell();
+        if (state is AuthAuthenticated) return MultiBlocProvider(
+          providers: [
+            BlocProvider(create: (_) => PosBloc(repository: context.read<PosRepository>(), sync: context.read<SyncRepository>())..add(const PosStarted())),
+            BlocProvider(create: (_) => PurchasesBloc(repository: context.read<PurchasesRepository>(), sync: context.read<SyncRepository>())..add(const PurchasesStarted())),
+            BlocProvider(create: (_) => InventoryBloc(repository: context.read<InventoryRepository>())..add(const InventoryStarted())),
+            BlocProvider(create: (_) => DebtsBloc(repository: context.read<DebtsRepository>(), sync: context.read<SyncRepository>())..add(const DebtsStarted())),
+          ], child: const HomeShell());
         if (state is AuthLoading || state is AuthInitial) {
           return const Scaffold(body: Center(child: CircularProgressIndicator()));
         }
         return LoginPage(
           onLoggedIn: () {
             context.read<AuthBloc>().add(const AuthSessionChecked());
-            context.read<PosBloc>().add(const PosRefreshCatalog());
-            context.read<PurchasesBloc>().add(const PurchasesStarted());
-            context.read<InventoryBloc>().add(const InventoryRefreshRequested());
-            context.read<DebtsBloc>().add(const DebtsRefreshRequested());
+
           },
         );
       },

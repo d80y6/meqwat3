@@ -39,7 +39,7 @@ export default function ProductsPage() {
     }
   }, [search, toast]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { const timer = setTimeout(() => void load(), 0); return () => clearTimeout(timer); }, [load]);
 
   function openCreate() {
     setEditing(null);

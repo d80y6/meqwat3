@@ -1,14 +1,15 @@
+import { businessDateBoundary } from "@/lib/business-date";
 import { db } from "@/db";
 import { inventoryMovements, products } from "@/db/schema";
 import { and, eq, desc, gte, lte, sql } from "drizzle-orm";
-import { ok, handler, requireTenantUser, parsePagination, audit, ApiError } from "@/lib/api";
+import { requireMutationId, ok, handler, requireTenantUser, parsePagination, audit, ApiError } from "@/lib/api";
 import { assertTenantWritable, recordStockAction } from "@/lib/services";
 
 export const dynamic = "force-dynamic";
 
 /** Stock overview + movement ledger (daily stock & spoilage reporting source). */
 export const GET = handler(async (req: Request) => {
-  const user = await requireTenantUser();
+  const user = await requireTenantUser("inventory:manage");
   const { limit, offset } = parsePagination(req);
   const url = new URL(req.url);
   const productId = url.searchParams.get("productId");
@@ -42,8 +43,9 @@ export const GET = handler(async (req: Request) => {
   const day = url.searchParams.get("day");
   let daily: unknown[] = [];
   if (day) {
-    const start = new Date(`${day}T00:00:00`);
-    const end = new Date(`${day}T23:59:59.999`);
+    const start = businessDateBoundary(day);
+    const end = businessDateBoundary(day, true);
+    if (!start || !end) throw new ApiError("تاريخ الجرد غير صالح");
     daily = await db
       .select({
         productId: inventoryMovements.productId,
@@ -72,11 +74,12 @@ export const POST = handler(async (req: Request) => {
   const user = await requireTenantUser("inventory:manage");
   await assertTenantWritable(user.tenantId);
   const body = await req.json();
+  requireMutationId(body);
   if (!body?.productId) throw new ApiError("اختر الصنف");
   if (body.type !== "spoilage" && body.type !== "adjustment") throw new ApiError("نوع الحركة غير صالح");
   const result = await recordStockAction(
     { tenantId: user.tenantId, userId: user.id, role: user.role },
-    { productId: body.productId, type: body.type, qty: body.qty, notes: body.notes },
+    { clientMutationId: body.clientMutationId, productId: body.productId, type: body.type, qty: body.qty, notes: body.notes },
   );
   await audit(user, `inventory.${body.type}`, "product", body.productId, { qty: body.qty });
   return ok(result, 201);

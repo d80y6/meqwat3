@@ -92,16 +92,17 @@ export default function LoginPage() {
             <LoginForm />
           </Suspense>
           <div className="mt-5 border-t border-slate-100 pt-4 text-center text-sm text-slate-500">
+            <Link href="/forgot-password" className="mb-3 block font-semibold text-leaf-700">نسيت كلمة المرور؟</Link>
             ليس لديك متجر؟{" "}
             <Link href="/register" className="font-semibold text-leaf-700 hover:underline">اطلب اشتراكاً جديداً</Link>
           </div>
         </div>
-        <div className="mt-4 rounded-xl bg-white/10 p-4 text-xs leading-6 text-leaf-100">
+        {process.env.NEXT_PUBLIC_SHOW_DEMO === "true" && <div className="mt-4 rounded-xl bg-white/10 p-4 text-xs leading-6 text-leaf-100">
           <p className="font-semibold text-white">حسابات البيئة التجريبية:</p>
           <p dir="ltr" className="text-left">admin@meqwat.app / Admin@1234</p>
           <p dir="ltr" className="text-left">owner@baraka.ye / Owner@1234</p>
           <p dir="ltr" className="text-left">cashier@baraka.ye / Cashier@1234</p>
-        </div>
+        </div>}
       </div>
     </div>
   );

@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import type { ReactNode } from "react";
 import { getCurrentUser } from "@/lib/auth";
-import { db } from "@/db";
+import { withTenantTx } from "@/lib/tx";
 import { tenants } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { ROLE_PERMISSIONS } from "@/lib/permissions";
@@ -12,11 +12,12 @@ export const dynamic = "force-dynamic";
 export default async function AppLayout({ children }: { children: ReactNode }) {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
+  if (user.mustChangePassword) redirect("/change-password");
 
   let tenantName: string | null = null;
   let isDemo = false;
   if (user.tenantId) {
-    const [tenant] = await db.select().from(tenants).where(eq(tenants.id, user.tenantId)).limit(1);
+    const [tenant] = await withTenantTx(user, tx => tx.select().from(tenants).where(eq(tenants.id, user.tenantId!)).limit(1));
     if (!tenant || tenant.status !== "active") redirect("/login?error=suspended");
     tenantName = tenant.name;
     isDemo = tenant.isDemo;

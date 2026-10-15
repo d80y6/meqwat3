@@ -27,7 +27,12 @@ jobs:
           --health-interval 5s --health-timeout 3s --health-retries 10
     env:
       DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/meqwat_test
+      RLS_TEST_DATABASE_URL: postgresql://meqwat_app:ci-test-only-password@127.0.0.1:5432/meqwat_test
+      APP_DATABASE_URL: postgresql://meqwat_app:ci-test-only-password@127.0.0.1:5432/meqwat_test
+      TEST_APP_PASSWORD: ci-test-only-password
       AUTH_SECRET: ci-only-secret-not-for-production-0123456789
+      ARENA_PREVIEW: "1" # isolated HTTP browser fixture only, never production
+      APP_ORIGIN: http://127.0.0.1:3000
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -40,7 +45,15 @@ jobs:
       - name: TypeScript (strict)
         run: npm exec tsc -- --noEmit --pretty false
       - name: Apply database schema
-        run: npx drizzle-kit push
+        run: npm run db:migrate
+      - name: Restricted application role
+        run: npx tsx scripts/test-role.ts
+      - name: Lint source
+        run: npm run lint
+      - name: Production dependency audit
+        run: npm audit --omit=dev
+      - name: Isolated demo fixtures for browser journeys
+        run: npx tsx src/db/seed.ts
       - name: Unit + integration tests (real PostgreSQL)
         run: npx vitest run
       - name: Production build

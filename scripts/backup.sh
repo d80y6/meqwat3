@@ -1,22 +1,18 @@
 #!/usr/bin/env bash
-# Meqwat SaaS — PostgreSQL backup.
-# Usage: DATABASE_URL=postgresql://... ./scripts/backup.sh [output-dir]
-# Produces a compressed custom-format dump restorable with pg_restore.
+# Owner/backup-role URL required. Local retention is not off-site recovery.
 set -euo pipefail
-
+umask 077
+: "${DATABASE_URL:?DATABASE_URL is required}"
 OUT_DIR="${1:-./backups}"
 mkdir -p "$OUT_DIR"
 STAMP="$(date +%Y%m%d-%H%M%S)"
-FILE="$OUT_DIR/meqwat-$STAMP.dump"
-
-if [ -z "${DATABASE_URL:-}" ]; then
-  echo "DATABASE_URL is required" >&2
-  exit 1
-fi
-
-pg_dump "$DATABASE_URL" --format=custom --no-owner --file "$FILE"
-echo "✓ Backup written: $FILE ($(du -h "$FILE" | cut -f1))"
-
-# Retention: keep the newest 14 backups.
-ls -1t "$OUT_DIR"/meqwat-*.dump 2>/dev/null | tail -n +15 | xargs -r rm -f
-echo "✓ Retention applied (14 newest kept in $OUT_DIR)"
+FILE="$OUT_DIR/meqwat-$STAMP-$$.dump"
+PARTIAL="$(mktemp "$OUT_DIR/.meqwat-backup.XXXXXX")"
+trap 'rm -f -- "$PARTIAL"' EXIT
+pg_dump "$DATABASE_URL" --format=custom --no-owner --file "$PARTIAL"
+mv -- "$PARTIAL" "$FILE"
+echo "Backup completed; verify an isolated restore before relying on it."
+# Generated names sort chronologically; array expansion preserves spaced paths.
+shopt -s nullglob
+files=("$OUT_DIR"/meqwat-*.dump)
+if (( ${#files[@]} > 14 )); then rm -f -- "${files[@]:0:${#files[@]}-14}"; fi

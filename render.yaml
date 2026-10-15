@@ -18,14 +18,21 @@ services:
     name: meqwat-web
     env: node
     plan: free
-    buildCommand: npm ci && npx drizzle-kit push && npm run build
+    buildCommand: npm ci && npm run build
+    # Apply reviewed migrations with the schema-owner URL separately before release.
     startCommand: npm run start
     healthCheckPath: /api/health
     envVars:
-      - key: DATABASE_URL
+      # Owner connection is for reviewed manual migrations/bootstrap ONLY.
+      - key: MIGRATION_DATABASE_URL
         fromDatabase:
           name: meqwat-db
           property: connectionString
+      # Set this to the separately provisioned meqwat_app connection.
+      - key: DATABASE_URL
+        sync: false
+      - key: APP_ORIGIN
+        sync: false
       - key: NODE_ENV
         value: production
       - key: AUTH_SECRET

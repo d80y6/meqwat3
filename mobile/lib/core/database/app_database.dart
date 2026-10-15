@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 
@@ -7,6 +8,22 @@ import 'package:sqflite/sqflite.dart';
 class AppDatabase {
   AppDatabase(this._db);
   final Database _db;
+  String? tenantId;
+  String? userId;
+  String? get ownerKey => tenantId == null ? null : '$tenantId:$userId';
+
+  Future<void> bindOwner(String tenant, String user) async {
+    if (ownerKey == '$tenant:$user') return;
+    tenantId = tenant; userId = user;
+    // Catalog caches contain no financial postings; never show another login's cache.
+    await _db.transaction((tx) async { await tx.delete('products'); await tx.delete('customers'); });
+  }
+  void clearOwner() { tenantId = null; userId = null; }
+  bool _owned(Map<String, Object?> row) {
+    if (ownerKey == null) return false;
+    try { return (jsonDecode(row['payload'] as String) as Map)['_queueOwner'] == ownerKey; }
+    catch (_) { return false; }
+  }
 
   static Future<AppDatabase> open() async {
     final dir = await getDatabasesPath();
@@ -56,20 +73,23 @@ class AppDatabase {
     await b.commit(noResult: true);
   }
 
-  Future<List<Map<String, Object?>>> products() => _db.query('products', orderBy: 'name');
+  Future<List<Map<String, Object?>>> products() async => ownerKey == null ? [] : await _db.query('products', orderBy: 'name');
 
   /* ------------------------------- outbox ------------------------------ */
-  Future<void> enqueueOutbox(Map<String, Object?> row) =>
-      _db.insert('outbox', row, conflictAlgorithm: ConflictAlgorithm.ignore);
+  Future<void> enqueueOutbox(Map<String, Object?> row) async {
+    if (ownerKey == null) throw StateError('Login required before queuing');
+    final payload = jsonDecode(row['payload'] as String) as Map<String, dynamic>;
+    payload['_queueOwner'] = ownerKey;
+    await _db.insert('outbox', {...row, 'payload': jsonEncode(payload)}, conflictAlgorithm: ConflictAlgorithm.ignore);
+  }
 
-  Future<List<Map<String, Object?>>> pendingOutbox() => _db.query(
-        'outbox',
-        where: "status != 'conflict'",
-        orderBy: 'created_at',
-      );
-
-  Future<List<Map<String, Object?>>> allOutbox() =>
-      _db.query('outbox', orderBy: 'created_at DESC');
+  Future<List<Map<String, Object?>>> pendingOutbox() async {
+    final rows = await _db.query('outbox', where: "status != 'conflict'", orderBy: 'created_at');
+    // Legacy ownerless rows are retained for manual recovery, never auto-replayed.
+    return rows.where(_owned).take(100).toList();
+  }
+  Future<List<Map<String, Object?>>> allOutbox() async =>
+    (await _db.query('outbox', orderBy: 'created_at DESC')).where(_owned).toList();
 
   Future<void> deleteOutbox(String mutationId) =>
       _db.delete('outbox', where: 'client_mutation_id = ?', whereArgs: [mutationId]);
@@ -91,8 +111,5 @@ class AppDatabase {
   Future<void> recordConfirmed(Map<String, Object?> row) =>
       _db.insert('confirmed_sales', row, conflictAlgorithm: ConflictAlgorithm.ignore);
 
-  Future<int> pendingCount() async {
-    final r = await _db.rawQuery("SELECT COUNT(*) c FROM outbox WHERE status != 'conflict'");
-    return Sqflite.firstIntValue(r) ?? 0;
-  }
+  Future<int> pendingCount() async => (await allOutbox()).where((r) => r['status'] != 'conflict').length;
 }

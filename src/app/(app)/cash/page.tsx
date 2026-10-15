@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Plus, Lock, Landmark, TriangleAlert, Receipt, Wallet } from "lucide-react";
-import { apiGet, apiPost, newMutationId } from "@/lib/client";
-import { fmtMoney } from "@/lib/money";
+import { apiGet, apiPost } from "@/lib/client";
+import { fmtMoney, addMoney, subMoney, isValidAmount } from "@/lib/money";
 import { Btn, Field, Input, Select, Textarea, Modal, PageHeader, TableShell, Badge, EmptyState, Loading, useToast } from "@/components/ui";
 
 interface Register { id: string; name: string }
@@ -49,7 +49,7 @@ export default function CashPage() {
     } catch (e) { toast.push("error", e instanceof Error ? e.message : "تعذر التحميل"); }
     finally { setLoading(false); }
   }, [toast]);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { const timer = setTimeout(() => void load(), 0); return () => clearTimeout(timer); }, [load]);
 
   async function openShift() {
     if (!registerId) return toast.push("error", "اختر الصندوق أو أنشئ صندوقاً أولاً");
@@ -96,7 +96,7 @@ export default function CashPage() {
     if (Number(expAmount) <= 0) return toast.push("error", "المبلغ يجب أن يكون أكبر من صفر");
     setExpSaving(true);
     try {
-      await apiPost("/api/expenses", { amount: expAmount, description: expDesc, category: expCategory, shiftId: expShift || null, clientMutationId: newMutationId() });
+      await apiPost("/api/expenses", { amount: expAmount, description: expDesc, category: expCategory, shiftId: expShift || null });
       toast.push("success", "تم تسجيل المصروف");
       setExpenseModal(false); setExpAmount(""); setExpDesc("");
       void load();
@@ -147,14 +147,14 @@ export default function CashPage() {
               <li key={ex.id} className="flex items-center gap-3 px-3 py-2 text-sm">
                 <span className="font-semibold">{ex.description}</span>
                 <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs">{ex.category ?? "عام"}</span>
-                <span className="ms-auto font-bold tabnums text-red-600">-{fmtMoney(ex.amount)}</span>
+                <span className="ms-auto font-bold tabnums text-red-600">{fmtMoney(ex.amount)}</span>
                 <span className="text-xs text-slate-400">{new Date(ex.createdAt).toLocaleDateString("ar-YE")}</span>
               </li>
             ))}
           </ul>
         )}
         {expenses.length > 0 && (
-          <p className="mt-2 text-xs text-slate-400 flex items-center gap-1"><Wallet className="h-3.5 w-3.5" /> إجمالي المصروفات المعروضة: {fmtMoney(String(expenses.slice(0, 8).reduce((s, e) => s + Number(e.amount), 0)))} — المصروفات تؤثر على صافي الربح المتاح في لوحة التقارير.</p>
+          <p className="mt-2 text-xs text-slate-400 flex items-center gap-1"><Wallet className="h-3.5 w-3.5" /> إجمالي المصروفات المعروضة: {fmtMoney(expenses.slice(0, 8).reduce((s, e) => addMoney(s, e.amount), "0"))} — قيم دفتر النقد الموقّعة؛ تقرير الربح إجمالي قبل المصروفات.</p>
         )}
       </div>
 
@@ -224,7 +224,7 @@ export default function CashPage() {
             </Select>
           </Field>
           <Btn type="submit" loading={expSaving} className="w-full"><Receipt className="h-4 w-4" /> حفظ المصروف</Btn>
-          <p className="text-xs leading-5 text-slate-400">المصروف يُسجَّل كحركة مالية وتُخصم من صافي الربح ومتوقع النقد عند إغلاق الوردية.</p>
+          <p className="text-xs leading-5 text-slate-400">المصروف يُسجَّل كحركة مالية وتؤثر على متوقع النقد عند إغلاق الوردية.</p>
         </form>
       </Modal>
 
@@ -238,12 +238,12 @@ export default function CashPage() {
             <Field label="النقد المعدود فعلياً في الدرج (ر.ي)" required>
               <Input type="number" min="0" step="any" value={counted} onChange={(e) => setCounted(e.target.value)} className="ltr-nums" autoFocus />
             </Field>
-            {counted !== "" && closeFor.expectedNow && (
+            {isValidAmount(counted) && closeFor.expectedNow && (
               <p className={`flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold ${Number(counted) - Number(closeFor.expectedNow) === 0 ? "bg-leaf-50 text-leaf-800" : "bg-red-50 text-red-700"}`}>
                 <TriangleAlert className="h-4 w-4" />
                 {Number(counted) - Number(closeFor.expectedNow) === 0
                   ? "متطابق مع المتوقع"
-                  : `الفرق: ${fmtMoney(Math.abs(Number(counted) - Number(closeFor.expectedNow)))} ${Number(counted) < Number(closeFor.expectedNow) ? "(عجز)" : "(زيادة)"}`}
+                  : `الفرق: ${fmtMoney(subMoney(counted, closeFor.expectedNow))} ${Number(counted) < Number(closeFor.expectedNow) ? "(عجز)" : "(زيادة)"}`}
               </p>
             )}
             <Btn onClick={closeShift} loading={saving} className="w-full">تأكيد الإغلاق والمطابقة</Btn>

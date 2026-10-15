@@ -22,10 +22,16 @@ class SyncRepository {
   final AppDatabase db;
 
   Future<SyncOutcome> syncNow() async {
+    final owner = db.ownerKey;
+    if (owner == null) throw StateError('Login required');
+    final me = await api.get('/api/auth/me');
+    final user = me['user'] as Map<String, dynamic>;
+    if (owner != "${user['tenantId']}:${user['id']}") throw StateError('Queue owner mismatch');
     final ops = await db.pendingOutbox();
     if (ops.isEmpty) return const SyncOutcome();
 
     final data = await api.post('/api/sync', {
+      'tenantId': db.tenantId, 'userId': db.userId,
       'operations': ops.map((o) => {
             'clientMutationId': o['client_mutation_id'],
             'type': o['type'],
@@ -33,6 +39,7 @@ class SyncRepository {
           }).toList(),
     });
 
+    if (db.ownerKey != owner) throw StateError('Session changed during sync');
     var applied = 0, duplicates = 0, conflicts = 0, failed = 0;
     final results = (data['results'] as List).cast<Map<String, dynamic>>();
     for (final r in results) {

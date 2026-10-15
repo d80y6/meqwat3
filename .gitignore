@@ -42,3 +42,6 @@ mobile/macos/Flutter/GeneratedPluginRegistrant.swift.orig
 .idea/
 .vscode/
 *.iml
+
+*.tsbuildinfo
+.audit-local/

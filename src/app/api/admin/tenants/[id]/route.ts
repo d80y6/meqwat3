@@ -1,6 +1,6 @@
 import { db } from "@/db";
 import { tenants, subscriptions, plans } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { eq, desc } from "drizzle-orm";
 import { ok, handler, requireUser, requireRole, audit, ApiError } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
@@ -23,7 +23,7 @@ export const PATCH = handler(async (req: Request, { params }: { params: Promise<
     return ok(updated);
   }
 
-  if (body.planId || body.subscriptionStatus || body.endsAt) {
+  if (body.planId || body.subscriptionStatus || body.endsAt || body.extendDays) {
     let planId = body.planId as string | undefined;
     if (planId) {
       const [plan] = await db.select().from(plans).where(eq(plans.id, planId)).limit(1);
@@ -33,15 +33,17 @@ export const PATCH = handler(async (req: Request, { params }: { params: Promise<
       .select()
       .from(subscriptions)
       .where(eq(subscriptions.tenantId, id))
-      .orderBy(subscriptions.createdAt)
+      .orderBy(desc(subscriptions.createdAt))
       .limit(1);
     if (!latest) throw new ApiError("لا يوجد اشتراك لهذا المتجر");
     const patch: Record<string, unknown> = {};
     if (planId) patch.planId = planId;
+    if (body.subscriptionStatus && !["trial","active","past_due","cancelled","expired"].includes(body.subscriptionStatus)) throw new ApiError("حالة غير صالحة");
     if (body.subscriptionStatus) patch.status = body.subscriptionStatus;
     if (body.endsAt) patch.endsAt = new Date(body.endsAt);
     // Renewal shortcut: extendDays adds days from now.
     if (body.extendDays) {
+      if (!Number.isInteger(Number(body.extendDays)) || Number(body.extendDays) < 1 || Number(body.extendDays) > 3660) throw new ApiError("مدة غير صالحة");
       const base = latest.endsAt && latest.endsAt > new Date() ? latest.endsAt : new Date();
       patch.endsAt = new Date(base.getTime() + Number(body.extendDays) * 86400_000);
       patch.status = "active";

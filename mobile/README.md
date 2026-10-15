@@ -1,3 +1,5 @@
+> **Audit status: NOT CERTIFIED.** Source ownership/session fixes have not been compiled or device-tested in this sandbox (Flutter SDK unavailable). Ownerless legacy outboxes are retained but excluded from replay. See `../docs/audit/OPERATIONS.md`.
+
 # Meqwat Mobile (Flutter)
 
 Offline-first POS client for qat shops, built with clean architecture + BLoC.

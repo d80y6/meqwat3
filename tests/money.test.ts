@@ -52,3 +52,17 @@ describe("permission matrix", () => {
     expect(hasPermission("tenant_owner", "admin:tenants")).toBe(false);
   });
 });
+
+
+describe("incomplete monetary UI drafts", () => {
+  it("keeps strict posting validation while preventing render exceptions", async () => {
+    const { draftCents, draftLineTotal } = await import("../src/lib/money-draft");
+    expect(draftCents("0.301")).toBeNull();
+    expect(draftCents("-1")).toBeNull();
+    expect(draftCents("0.30")).toBe(30);
+    expect(draftLineTotal("1.0001","0.30")).toBeNull();
+    expect(draftLineTotal("1","0.301")).toBeNull();
+    expect(draftLineTotal("1","0.30")).toBe("0.30");
+    expect(subMoney("0.30","0.10")).toBe("0.20");
+  });
+});

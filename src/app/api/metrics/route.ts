@@ -1,7 +1,7 @@
 import { db } from "@/db";
 import { sql } from "drizzle-orm";
 import { ok, fail } from "@/lib/api";
-import { verifyAccessToken } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -18,21 +18,10 @@ export async function GET(req: Request) {
 
   if (token && auth === token) authorized = true;
   if (!authorized) {
-    // Fall back to platform_admin cookie auth
-    const cookie = req.headers.get("cookie") ?? "";
-    const at = cookie.match(/meqwat_at=([^;]+)/)?.[1];
-    if (at) {
-      const user = await verifyAccessToken(decodeURIComponent(at));
-      if (user?.role === "platform_admin") authorized = true;
-    }
+    const user = await getCurrentUser();
+    authorized = user?.role === "platform_admin";
   }
-  if (!authorized && token) {
-    return fail("غير مصرح", 401, "UNAUTHENTICATED");
-  }
-  // If no METRICS_TOKEN is set, allow any authenticated platform_admin or open in dev.
-  if (!authorized && process.env.NODE_ENV === "production" && token) {
-    return fail("غير مصرح", 401, "UNAUTHENTICATED");
-  }
+  if (!authorized) return fail("غير مصرح", 401, "UNAUTHENTICATED");
 
   const started = Date.now();
   let dbLatency: number | null = null;

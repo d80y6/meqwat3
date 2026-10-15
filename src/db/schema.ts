@@ -163,6 +163,7 @@ export const users = pgTable(
     email: varchar("email", { length: 160 }).notNull(),
     phone: varchar("phone", { length: 40 }),
     passwordHash: text("password_hash").notNull(),
+    mustChangePassword: boolean("must_change_password").notNull().default(false),
     role: userRoleEnum("role").notNull().default("cashier"),
     isActive: boolean("is_active").notNull().default(true),
     lastLoginAt: ts("last_login_at"),
@@ -346,6 +347,7 @@ export const purchaseItems = pgTable(
       .notNull()
       .references(() => products.id),
     qty: qty("qty").notNull(),
+    returnedQty: qty("returned_qty").notNull().default("0"),
     unitCost: money("unit_cost").notNull(),
     total: money("total").notNull(),
   },
@@ -547,3 +549,18 @@ export type Supplier = typeof suppliers.$inferSelect;
 export type Sale = typeof sales.$inferSelect;
 export type Shift = typeof shifts.$inferSelect;
 export type Plan = typeof plans.$inferSelect;
+
+/** Single-use password reset tokens; never store the plaintext link token. */
+export const passwordResets = pgTable("password_resets", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  tokenHash: text("token_hash").notNull().unique(),
+  expiresAt: ts("expires_at").notNull(),
+  usedAt: ts("used_at"),
+});
+
+export const rateLimitBuckets = pgTable("rate_limit_buckets", {
+  key: text("key").primaryKey(),
+  count: integer("count").notNull(),
+  resetsAt: ts("resets_at").notNull(),
+});

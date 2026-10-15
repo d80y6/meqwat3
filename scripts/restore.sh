@@ -20,6 +20,6 @@ if [ "$CONFIRM" != "RESTORE" ]; then
   exit 1
 fi
 
-pg_restore "$DATABASE_URL" --clean --if-exists --no-owner "$FILE"
+pg_restore --dbname="$DATABASE_URL" --clean --if-exists --no-owner --single-transaction --exit-on-error "$FILE"
 echo "✓ Restore complete from $FILE"
 echo "Verify: curl http://localhost:3000/api/health"

@@ -9,6 +9,7 @@
  */
 
 export interface RateLimitStore {
+  consume?(key: string, windowMs: number): Promise<{ count:number; resetAt:number }>;
   get(key: string): Promise<{ count: number; resetAt: number } | null>;
   set(key: string, bucket: { count: number; resetAt: number }, ttlMs: number): Promise<void>;
   incr(key: string): Promise<{ count: number; resetAt: number } | null>;
@@ -73,41 +74,22 @@ if (typeof setInterval !== "undefined") {
  * ```
  */
 export function createRedisStore(client: {
-  get(key: string): Promise<string | null>;
-  set(key: string, value: string, opts?: { px?: number }): Promise<unknown>;
-  incr(key: string): Promise<number>;
-  pexpire?(key: string, ttl: number): Promise<unknown>;
+  eval(script: string, keys: string[], args: (string | number)[]): Promise<unknown>;
 }): RateLimitStore {
   return {
-    async get(key) {
-      const raw = await client.get(`rl:${key}`);
-      if (!raw) return null;
-      try {
-        const b = JSON.parse(raw) as Bucket;
-        if (b.resetAt <= Date.now()) return null;
-        return b;
-      } catch {
-        return null;
-      }
+    async consume(key, windowMs) {
+      // Upstash-compatible EVAL contract; ioredis requires a thin signature adapter.
+      const result = await client.eval(`
+        local count = redis.call('INCR', KEYS[1])
+        if count == 1 then redis.call('PEXPIRE', KEYS[1], ARGV[1]) end
+        return {count, redis.call('PTTL', KEYS[1])}
+      `, [`rl:${key}`], [windowMs]) as [number, number];
+      if (!Array.isArray(result) || result[1] < 0) throw new Error("Rate limit store failure");
+      return { count:Number(result[0]), resetAt:Date.now()+Number(result[1]) };
     },
-    async set(key, bucket, ttlMs) {
-      await client.set(`rl:${key}`, JSON.stringify(bucket), { px: ttlMs });
-    },
-    async incr(key) {
-      // For Redis we store JSON; incr is implemented as get+set for simplicity.
-      // For high contention, replace with Lua script that does HINCRBY + EXPIRE atomically.
-      const cur = await client.get(`rl:${key}`);
-      if (!cur) return null;
-      try {
-        const b = JSON.parse(cur) as Bucket;
-        b.count += 1;
-        const ttl = Math.max(0, b.resetAt - Date.now());
-        await client.set(`rl:${key}`, JSON.stringify(b), { px: ttl });
-        return b;
-      } catch {
-        return null;
-      }
-    },
+    async get() { throw new Error("Use atomic consume"); },
+    async set() { throw new Error("Use atomic consume"); },
+    async incr() { throw new Error("Use atomic consume"); },
   };
 }
 
@@ -186,7 +168,7 @@ export function checkRateLimit(
 
   // Async store path — for call sites that can await, prefer checkRateLimitAsync.
   console.warn("[rate-limit] async store active but checkRateLimit (sync) was called — use checkRateLimitAsync");
-  return { ok: true, allowed: true, retryAfterSec: 0, remaining: lim };
+  return { ok: false, allowed: false, retryAfterSec: 60, remaining: 0 };
 }
 
 export async function checkRateLimitAsync(
@@ -194,14 +176,24 @@ export async function checkRateLimitAsync(
   limit: number,
   windowMs: number,
 ): Promise<{ ok: boolean; allowed: boolean; retryAfterSec: number; remaining: number }> {
-  const now = Date.now();
-  const existing = await activeStore.get(key);
-  if (!existing) {
-    await activeStore.set(key, { count: 1, resetAt: now + windowMs }, windowMs);
-    return { ok: true, allowed: true, retryAfterSec: 0, remaining: limit - 1 };
+  if (activeStore === memoryStore && process.env.NODE_ENV === "production") {
+    const { authDb } = await import("@/db");
+    const { sql } = await import("drizzle-orm");
+    const { createHash } = await import("node:crypto");
+    const hashed = createHash("sha256").update(key).digest("hex");
+    const result = await authDb.execute(sql`
+      insert into rate_limit_buckets (key, count, resets_at) values (${hashed}, 1, now() + ${windowMs} * interval '1 millisecond')
+      on conflict (key) do update set
+        count = case when rate_limit_buckets.resets_at <= now() then 1 else rate_limit_buckets.count + 1 end,
+        resets_at = case when rate_limit_buckets.resets_at <= now() then now() + ${windowMs} * interval '1 millisecond' else rate_limit_buckets.resets_at end
+      returning count, greatest(0,ceil(extract(epoch from resets_at - now())))::int as retry`);
+    const row = result.rows[0] as {count:number; retry:number};
+    return { ok:row.count<=limit, allowed:row.count<=limit, remaining:Math.max(0,limit-row.count), retryAfterSec:row.count>limit?row.retry:0 };
   }
-  const updated = await activeStore.incr(key);
-  const bucket = updated ?? existing;
+  if (activeStore === memoryStore) return checkRateLimit(key, limit, windowMs);
+  const now = Date.now();
+  if (!activeStore.consume) throw new Error("Custom rate limit stores must implement atomic consume");
+  const bucket = await activeStore.consume(key, windowMs);
   if (bucket.count > limit) {
     return { ok: false, allowed: false, retryAfterSec: Math.ceil((bucket.resetAt - now) / 1000), remaining: 0 };
   }
@@ -230,9 +222,7 @@ export async function limitOrRespond(
 ): Promise<Response | null> {
   const key = `${keyPrefix}:${clientIp(req)}`;
   // Use async check so Redis stores work correctly.
-  const res = activeStore === memoryStore
-    ? checkRateLimit(key, limit, windowMs)
-    : await checkRateLimitAsync(key, limit, windowMs);
+  const res = await checkRateLimitAsync(key, limit, windowMs);
   if (!res.ok) {
     return Response.json(
       { ok: false, error: `محاولات كثيرة — حاول مجدداً بعد ${Math.ceil(res.retryAfterSec / 60)} دقيقة`, code: "RATE_LIMITED" },

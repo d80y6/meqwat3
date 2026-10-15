@@ -16,7 +16,7 @@ async function load(tenantId: string, id: string) {
 }
 
 export const GET = handler(async (_req: Request, { params }: { params: Promise<{ id: string }> }) => {
-  const user = await requireTenantUser();
+  const user = await requireTenantUser("suppliers:manage");
   const { id } = await params;
   const supplier = await load(user.tenantId, id);
   const [recentPurchases, recentPayments] = await Promise.all([

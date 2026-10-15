@@ -7,7 +7,8 @@ import {
 } from "lucide-react";
 import { apiGet, apiPost, ClientError, newMutationId } from "@/lib/client";
 import { enqueue, getQueue, removeOp, subscribeQueue, syncQueue, isOnline, type QueuedOp } from "@/lib/offline";
-import { fmtMoney, toCents, fromCents, mulQtyPrice } from "@/lib/money";
+import { draftCents, draftLineTotal } from "@/lib/money-draft";
+import { fmtMoney, toCents, fromCents } from "@/lib/money";
 import { Btn, Field, Input, Select, Modal, PageHeader, Badge, EmptyState, Loading, useToast } from "@/components/ui";
 
 interface Product { id: string; name: string; unit: string; salePrice: string; costPrice: string; stockQty: string; trackStock: boolean }
@@ -58,7 +59,7 @@ export default function PosPage() {
     }
   }, [toast]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { const timer = setTimeout(() => void load(), 0); return () => clearTimeout(timer); }, [load]);
 
   useEffect(() => {
     const update = () => setQueue(getQueue());
@@ -66,7 +67,7 @@ export default function PosPage() {
     const unsub = subscribeQueue(update);
     const on = () => setOnline(true);
     const off = () => setOnline(false);
-    setOnline(isOnline());
+    queueMicrotask(() => setOnline(isOnline()));
     window.addEventListener("online", on);
     window.addEventListener("offline", off);
     return () => { unsub(); window.removeEventListener("online", on); window.removeEventListener("offline", off); };
@@ -78,12 +79,12 @@ export default function PosPage() {
   );
 
   const grossCents = useMemo(
-    () => cart.reduce((sum, l) => sum + toCents(mulQtyPrice(l.qty, l.unitPrice)), 0),
+    () => cart.reduce((sum, l) => sum + toCents(draftLineTotal(l.qty, l.unitPrice) ?? 0), 0),
     [cart],
   );
-  const discountCents = Math.min(toCents(discount || 0), grossCents);
+  const discountCents = Math.min(draftCents(discount) ?? 0, grossCents);
   const netCents = grossCents - discountCents;
-  const paidCents = paidTouched ? toCents(paid || 0) : netCents;
+  const paidCents = paidTouched ? (draftCents(paid) ?? 0) : netCents;
   const creditCents = Math.max(0, netCents - paidCents);
   const customer = customers.find((c) => c.id === customerId);
 
@@ -108,6 +109,8 @@ export default function PosPage() {
 
   async function checkout() {
     if (cart.length === 0) return toast.push("error", "أضف صنفاً واحداً على الأقل");
+    if (draftCents(discount) === null || (paidTouched && draftCents(paid) === null) || cart.some(l => draftLineTotal(l.qty,l.unitPrice) === null)) return toast.push("error", "تحقق من المبالغ والكميات — المبالغ بخانتين عشريتين فقط");
+    if ((draftCents(discount) ?? 0) > grossCents) return toast.push("error", "الخصم أكبر من الإجمالي");
     if (paidCents > netCents) return toast.push("error", "المبلغ المدفوع أكبر من صافي الفاتورة");
     if (creditCents > 0 && !customerId) return toast.push("error", "البيع بالآجل يتطلب اختيار عميل");
     if (creditCents > 0 && customer && Number(customer.creditLimit) > 0 && toCents(customer.balance) + creditCents > toCents(customer.creditLimit)) {
@@ -115,6 +118,7 @@ export default function PosPage() {
     }
     const activeShift = openShifts.find((s) => s.id === shiftId);
     const payload = {
+      clientMutationId: newMutationId(),
       customerId: customerId || null,
       shiftId: activeShift?.id ?? null,
       registerId: activeShift?.registerId ?? null,
@@ -124,18 +128,23 @@ export default function PosPage() {
       source: "pos",
     };
     const label = `فاتورة بيع — ${cart.length} صنف — ${fmtMoney(fromCents(netCents))}`;
+    try { enqueue("sale", payload, label); } catch {
+      return toast.push("error", "تعذر حفظ العملية محلياً — لم يتم إرسالها، احتفظ بالسلة");
+    }
     setCheckingOut(true);
     try {
       if (!isOnline()) throw new TypeError("offline");
       const res = await apiPost<{ invoiceNo: number; totalAmount: string; duplicated?: boolean }>("/api/sales", {
-        ...payload, clientMutationId: newMutationId(),
+        ...payload,
       });
+      removeOp(payload.clientMutationId);
       setLastInvoice({ invoiceNo: res.invoiceNo, total: res.totalAmount });
       toast.push("success", res.duplicated ? "تم تأكيد الفاتورة (كانت مُرسلة مسبقاً)" : `تم حفظ الفاتورة #${res.invoiceNo}`);
       resetSale();
       void load();
     } catch (err) {
-      if (err instanceof ClientError) {
+      if (err instanceof ClientError && err.status < 500) {
+        removeOp(payload.clientMutationId);
         toast.push("error", err.message);
       } else {
         // Network/offline: queue locally with a stable idempotency key.
@@ -302,7 +311,7 @@ export default function PosPage() {
                       onChange={(e) => setCart((cur) => cur.map((x) => (x.product.id === l.product.id ? { ...x, unitPrice: e.target.value } : x)))}
                       className="w-24 rounded-lg border border-slate-200 px-2 py-1 text-sm ltr-nums"
                     />
-                    <span className="ms-auto font-bold tabnums">{fmtMoney(mulQtyPrice(l.qty, l.unitPrice))}</span>
+                    <span className="ms-auto font-bold tabnums">{draftLineTotal(l.qty, l.unitPrice) === null ? "مبلغ أو كمية غير صالحة" : fmtMoney(draftLineTotal(l.qty, l.unitPrice))}</span>
                   </div>
                 </div>
               ))}

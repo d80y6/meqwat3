@@ -1,12 +1,12 @@
 import "dotenv/config";
-import { db } from "./index";
+import { authDb as db } from "./index";
 import { plans, users } from "./schema";
 import { eq } from "drizzle-orm";
 import { hashPassword } from "../lib/auth";
 
 /**
  * Production bootstrap — run ONCE on a fresh production database:
- *   npx drizzle-kit push && npx tsx src/db/bootstrap.ts
+ *   npm run db:migrate && npx tsx src/db/bootstrap.ts
  *
  * Creates the plan catalog and the first platform administrator from
  * environment variables. Contains NO demo tenants or sample transactions.
@@ -48,7 +48,7 @@ async function main() {
 
 main()
   .then(() => process.exit(0))
-  .catch((err) => {
-    console.error("Bootstrap failed:", err instanceof Error ? err.message : err);
+  .catch(() => {
+    console.error("Bootstrap failed; verify configuration and administrator requirements");
     process.exit(1);
   });

@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { db } from "./index";
+import { authDb as db } from "./index";
 import {
   plans, tenants, users, products, customers, suppliers, cashRegisters, subscriptions,
 } from "./schema";
@@ -11,6 +11,8 @@ import { createSale, createPurchase, recordPayment, openShift, recordStockAction
  * Development/demo seed. All tenants created here are flagged is_demo=true
  * and must never be confused with production data. Idempotent: safe to re-run.
  */
+
+if (process.env.NODE_ENV === "production") throw new Error("Demo seeding is forbidden in production");
 
 async function main() {
   const [existingAdmin] = await db.select().from(users).where(eq(users.email, "admin@meqwat.app")).limit(1);
@@ -145,12 +147,11 @@ async function main() {
   });
 
   console.log("✓ Seeded: platform admin + 2 demo tenants (البركة / النور), products, purchases, sales, debts, open shift.");
-  console.log("  Logins: admin@meqwat.app/Admin@1234 · owner@baraka.ye/Owner@1234 · cashier@baraka.ye/Cashier@1234 · owner@noor.ye/Owner@1234");
 }
 
 main()
   .then(() => process.exit(0))
-  .catch((err) => {
-    console.error("Seed failed:", err);
+  .catch(() => {
+    console.error("Seed failed; inspect the isolated database configuration");
     process.exit(1);
   });

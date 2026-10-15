@@ -1,9 +1,13 @@
 # منصة مقوات — Meqwat SaaS
 
+> **Independent audit (2026-10-15): NOT READY for production certification.**
+> See [release gates](docs/audit/PRODUCTION-READINESS.md), [findings](docs/audit/FINDINGS.md),
+> and [safe deployment/migration runbook](docs/audit/OPERATIONS.md). Prior readiness claims are superseded.
+
 Multi-tenant SaaS for qat traders and shop owners in Yemen & the Horn of
 Africa: point-of-sale, inventory & daily spoilage, customer debts, supplier
-& consignment liabilities, purchases, cash registers & shift reconciliation,
-reports, subscriptions — Arabic-first RTL, offline-first.
+liabilities, purchases, cash registers & shift reconciliation,
+reports, subscriptions — Arabic-first RTL, with a persisted offline operation queue (not a cold-start offline web app).
 
 ## Stack
 - **Web**: Next.js 16 (App Router, strict TypeScript), Tailwind CSS v4
@@ -16,8 +20,8 @@ reports, subscriptions — Arabic-first RTL, offline-first.
 ```bash
 cp .env.example .env            # set DATABASE_URL (and AUTH_SECRET)
 npm install
-npx drizzle-kit push            # create schema
-psql "$DATABASE_URL" -f db/rls.sql   # enable RLS policies (optional locally)
+npm run db:migrate              # reviewed migrations, using schema-owner URL
+ # RLS is installed by migrations; provision/grant meqwat_app for runtime
 npx tsx src/db/seed.ts          # DEMO data (is_demo tenants) — dev only
 npm run dev                     # http://localhost:3000
 ```
@@ -35,18 +39,25 @@ Demo logins (seeded environment only):
 ### Option A — Render (recommended)
 1. Push this repo to GitHub.
 2. Render Dashboard → **New → Blueprint** → select the repo (`render.yaml`
-   provisions Postgres + the web service; the build applies the schema).
+   provisions Postgres + the web service; migrations are a separate reviewed step).
 3. Set `ADMIN_PASSWORD` in the web service env, then once in the Render
    Shell: `npx tsx src/db/bootstrap.ts` (plans + platform admin).
 4. GitHub Actions CI runs on every push: web tests/build/E2E, Flutter
    analyze/test/APK build, Docker image build.
 
 ### Option B — Docker
+Provision `POSTGRES_PASSWORD`, `APP_DB_PASSWORD`, `AUTH_SECRET` through secret storage
+before running Compose. Do not put real passwords in committed files or command history.
 ```bash
-POSTGRES_PASSWORD=... AUTH_SECRET=$(openssl rand -hex 32) docker compose up -d --build
-docker compose exec app npx drizzle-kit push
-ADMIN_PASSWORD='...' docker compose exec app npx tsx src/db/bootstrap.ts
+docker compose build app
+docker compose up -d db
+# MIGRATION_DATABASE_URL is the owner URL on the Compose network (host db).
+docker compose run --rm -e DATABASE_URL="$MIGRATION_DATABASE_URL" app npm run db:migrate
+docker compose run --rm -e DATABASE_URL="$MIGRATION_DATABASE_URL" -e ADMIN_PASSWORD app npx tsx src/db/bootstrap.ts
+docker compose up -d app
 ```
+Existing volumes do not re-run init SQL. Follow `docs/audit/OPERATIONS.md` for
+restricted-role provisioning/grants and backup-first schema adoption.
 
 ### Option C — bare metal
 ```bash
@@ -66,7 +77,8 @@ when set, new shop owners receive their one-time credentials by email.
 
 ## Tests
 ```bash
-npx vitest run        # unit (exact money) + integration (real PostgreSQL)
+npm test             # unit + integration; requires disposable local *test* DB
+npx playwright test  # production server uses APP_DATABASE_URL restricted role
 ```
 Integration tests create and fully remove `test-*` tenants.
 

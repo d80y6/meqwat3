@@ -3,13 +3,14 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { Plus, Trash2, ChevronDown, ChevronLeft, WifiOff, CloudUpload, RefreshCw, Undo2 } from "lucide-react";
 import { apiGet, apiPost, ClientError, newMutationId } from "@/lib/client";
-import { enqueue, getQueue, subscribeQueue, syncQueue, isOnline, type QueuedOp } from "@/lib/offline";
-import { fmtMoney, fmtQty, mulQtyPrice, toCents, fromCents } from "@/lib/money";
+import { enqueue, removeOp, getQueue, subscribeQueue, syncQueue, isOnline, type QueuedOp } from "@/lib/offline";
+import { draftCents, draftLineTotal } from "@/lib/money-draft";
+import { fmtMoney, fmtQty, toCents, fromCents } from "@/lib/money";
 import { Btn, Field, Input, Select, Textarea, Modal, PageHeader, TableShell, Badge, EmptyState, Loading, useToast } from "@/components/ui";
 
 interface Product { id: string; name: string; unit: string; costPrice: string; stockQty: string }
 interface Supplier { id: string; name: string; balance: string }
-interface PurchaseItem { id: string; productName: string; unit: string; qty: string; unitCost: string; total: string }
+interface PurchaseItem { id: string; productName: string; unit: string; qty: string; returnedQty: string; unitCost: string; total: string }
 interface Purchase { id: string; supplierName: string; totalAmount: string; paidAmount: string; remaining: string; purchaseDate: string; notes: string | null; items: PurchaseItem[] }
 
 interface Line { productId: string; qty: string; unitCost: string }
@@ -51,7 +52,7 @@ export default function PurchasesPage() {
     } catch (e) { toast.push("error", e instanceof Error ? e.message : "تعذر التحميل"); }
     finally { setLoading(false); }
   }, [toast]);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { const timer = setTimeout(() => void load(), 0); return () => clearTimeout(timer); }, [load]);
 
   useEffect(() => {
     const update = () => setQueue(getQueue().filter((q) => q.type === "purchase"));
@@ -59,14 +60,14 @@ export default function PurchasesPage() {
     const unsub = subscribeQueue(update);
     const on = () => setOnline(true);
     const off = () => setOnline(false);
-    setOnline(isOnline());
+    queueMicrotask(() => setOnline(isOnline()));
     window.addEventListener("online", on);
     window.addEventListener("offline", off);
     return () => { unsub(); window.removeEventListener("online", on); window.removeEventListener("offline", off); };
   }, []);
 
   const totalCents = useMemo(
-    () => lines.reduce((sum, l) => sum + (l.productId ? toCents(mulQtyPrice(l.qty || 0, l.unitCost || 0)) : 0), 0),
+    () => lines.reduce((sum, l) => sum + (l.productId ? toCents(draftLineTotal(l.qty, l.unitCost) ?? 0) : 0), 0),
     [lines],
   );
 
@@ -100,16 +101,22 @@ export default function PurchasesPage() {
     if (!supplierId) return setError("اختر المورّد");
     const valid = lines.filter((l) => l.productId && Number(l.qty) > 0);
     if (valid.length === 0) return setError("أضف صنفاً واحداً على الأقل بكمية صحيحة");
-    if (Number(paidAmount) > totalCents / 100) return setError("المبلغ المدفوع أكبر من إجمالي الشراء");
+    if (draftCents(paidAmount) === null || lines.some(l => l.productId && draftLineTotal(l.qty,l.unitCost) === null)) return setError("تحقق من المبالغ والكميات — المبالغ بخانتين عشريتين فقط");
+    if ((draftCents(paidAmount) ?? 0) > totalCents) return setError("المبلغ المدفوع أكبر من إجمالي الشراء");
     const payload = {
+      clientMutationId: newMutationId(),
       supplierId, paidAmount, notes: notes || undefined,
       items: valid.map((l) => ({ productId: l.productId, qty: l.qty, unitCost: l.unitCost })),
     };
     const label = `فاتورة شراء — ${valid.length} صنف — ${fmtMoney(fromCents(totalCents))}`;
+    try { enqueue("purchase", payload, label); } catch {
+      return setError("تعذر حفظ العملية محلياً — لم يتم إرسالها");
+    }
     setSaving(true);
     try {
       if (!isOnline()) throw new TypeError("offline");
-      const res = await apiPost<{ id: string; totalAmount: string; liability: string }>("/api/purchases", { ...payload, clientMutationId: newMutationId() });
+      const res = await apiPost<{ id: string; totalAmount: string; liability: string }>("/api/purchases", payload);
+      removeOp(payload.clientMutationId);
       toast.push("success", `تم تسجيل الشراء — الإجمالي ${fmtMoney(res.totalAmount)}${Number(res.liability) > 0 ? `، يُرحَّل للمورّد ${fmtMoney(res.liability)}` : ""}`);
       setModal(false);
       setLines([{ productId: "", qty: "1", unitCost: "" }]);
@@ -117,7 +124,8 @@ export default function PurchasesPage() {
       setNotes("");
       void load();
     } catch (err) {
-      if (err instanceof ClientError) {
+      if (err instanceof ClientError && err.status < 500) {
+        removeOp(payload.clientMutationId);
         setError((err as ClientError).message);
       } else {
         // offline / network → queue idempotently; server deduplicates on clientMutationId
@@ -228,7 +236,7 @@ export default function PurchasesPage() {
                 <div className="col-span-3">
                   <Input type="number" min="0" step="any" value={l.unitCost} onChange={(e) => updateLine(i, { unitCost: e.target.value })} className="ltr-nums" aria-label="سعر الشراء" placeholder="سعر الشراء" />
                 </div>
-                <div className="col-span-1 text-sm font-bold tabnums">{l.productId ? fmtMoney(mulQtyPrice(l.qty || 0, l.unitCost || 0)) : "—"}</div>
+                <div className="col-span-1 text-sm font-bold tabnums">{l.productId ? draftLineTotal(l.qty, l.unitCost) === null ? "غير صالح" : fmtMoney(draftLineTotal(l.qty, l.unitCost)) : "—"}</div>
                 <button type="button" onClick={() => setLines((ls) => ls.filter((_, idx) => idx !== i))} className="col-span-1 rounded-lg p-2 text-red-500 hover:bg-red-50" aria-label="حذف البند"><Trash2 className="h-4 w-4" /></button>
               </div>
             ))}
@@ -240,7 +248,7 @@ export default function PurchasesPage() {
             </Field>
             <div className="rounded-xl bg-slate-50 p-3 text-sm">
               <div className="flex justify-between"><span>إجمالي الشراء</span><b className="tabnums">{fmtMoney(fromCents(totalCents))}</b></div>
-              <div className="flex justify-between text-red-600"><span>يُرحَّل كمستحق للمورّد</span><b className="tabnums">{fmtMoney(fromCents(Math.max(0, totalCents - toCents(paidAmount || 0))))}</b></div>
+              <div className="flex justify-between text-red-600"><span>يُرحَّل كمستحق للمورّد</span><b className="tabnums">{fmtMoney(fromCents(Math.max(0, totalCents - (draftCents(paidAmount) ?? 0))))}</b></div>
             </div>
           </div>
           <Field label="ملاحظات"><Textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="رقم سيارة النقل، جودة المحصول…" /></Field>
@@ -256,7 +264,7 @@ export default function PurchasesPage() {
             {returnFor.items.map((it, idx) => (
               <div key={it.id} className="flex items-center gap-3 rounded-xl bg-slate-50 px-3 py-2">
                 <span className="flex-1 text-sm font-semibold">{it.productName} — متاح {fmtQty(it.qty)} × {fmtMoney(it.unitCost)}</span>
-                <Input type="number" min="0" max={it.qty} step="0.5" value={returnLines[idx]?.qty ?? "0"} onChange={(e) => setReturnLines((ls) => ls.map((r, i) => i === idx ? { ...r, qty: e.target.value } : r))} className="w-24 ltr-nums" aria-label={`كمية إرجاع ${it.productName}`} />
+                <Input type="number" min="0" max={Number(it.qty) - Number(it.returnedQty ?? 0)} step="0.5" value={returnLines[idx]?.qty ?? "0"} onChange={(e) => setReturnLines((ls) => ls.map((r, i) => i === idx ? { ...r, qty: e.target.value } : r))} className="w-24 ltr-nums" aria-label={`كمية إرجاع ${it.productName}`} />
               </div>
             ))}
             <Field label="طريقة الاسترداد">

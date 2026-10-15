@@ -1,3 +1,4 @@
+import { toCents, toMilliQty } from "@/lib/money";
 import { db } from "@/db";
 import { products } from "@/db/schema";
 import { and, eq } from "drizzle-orm";
@@ -18,8 +19,13 @@ async function loadTenantProduct(tenantId: string, id: string) {
 export const PATCH = handler(async (req: Request, { params }: { params: Promise<{ id: string }> }) => {
   const user = await requireTenantUser("products:manage");
   const { id } = await params;
-  await loadTenantProduct(user.tenantId, id);
+  const product = await loadTenantProduct(user.tenantId, id);
   const body = await req.json();
+  if (toMilliQty(product.stockQty) !== 0 &&
+      ((body.costPrice !== undefined && toCents(body.costPrice) !== toCents(product.costPrice)) ||
+       (body.trackStock !== undefined && body.trackStock !== product.trackStock))) {
+    throw new ApiError("لا يمكن تغيير تكلفة أو تتبع مخزون قائم — استخدم حركة شراء أو تسوية موثقة");
+  }
   const patch: Record<string, unknown> = { updatedAt: new Date() };
   for (const key of ["name", "sku", "category", "unit"] as const) {
     if (body[key] !== undefined) patch[key] = String(body[key]);

@@ -1,0 +1,13 @@
+.git
+node_modules
+.next
+.env
+.env.*
+!.env.example
+mobile/build
+mobile/.dart_tool
+backups
+test-results
+playwright-report
+.audit-local
+*.log

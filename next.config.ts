@@ -37,11 +37,16 @@ const securityHeaders = [
 const nextConfig: NextConfig = {
   // Keep builds strict — fail on TS or lint errors in CI.
   poweredByHeader: false,
+  allowedDevOrigins: ["*.e2b.app"],
   async headers() {
     return [
       {
         source: "/:path*",
-        headers: securityHeaders,
+        // Explicit sandbox opt-in only; production retains anti-framing headers.
+        headers: process.env.ARENA_PREVIEW === "1"
+          ? securityHeaders.filter(h => h.key !== "X-Frame-Options").map(h => h.key === "Content-Security-Policy"
+              ? { ...h, value: h.value.replace("frame-ancestors 'none'", "frame-ancestors https://*.arena.ai https://arena.ai https://*.e2b.app") } : h)
+          : securityHeaders,
       },
       {
         // Never cache auth endpoints or pages that carry tenant data.

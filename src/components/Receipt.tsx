@@ -1,6 +1,6 @@
 "use client";
 
-import { fmtMoney, fmtQty } from "@/lib/money";
+import { subMoney, fmtMoney, fmtQty } from "@/lib/money";
 
 export interface ReceiptItem { productName: string; unit: string; qty: string; unitPrice: string; total: string }
 export interface ReceiptData {
@@ -21,7 +21,7 @@ export interface ReceiptData {
  * globals.css hides the whole app and prints only this element.
  */
 export default function Receipt({ tenantName, sale }: { tenantName: string; sale: ReceiptData }) {
-  const net = Number(sale.totalAmount) - Number(sale.discount);
+  const net = subMoney(sale.totalAmount, sale.discount);
   return (
     <div id="receipt-print" dir="rtl" className="mx-auto w-[80mm] max-w-full bg-white p-3 font-sans text-[12px] leading-5 text-black">
       <div className="text-center">

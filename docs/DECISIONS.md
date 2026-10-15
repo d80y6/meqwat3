@@ -1,5 +1,7 @@
 # Meqwat SaaS — Implementation & Decision Record
 
+> HISTORICAL RECORD: readiness and verification claims below are superseded by the independent `docs/audit/` records dated 2026-10-14. In particular, RLS is now fail-closed, authentication binds sessions, money parsing is strict, production rate limiting uses PostgreSQL, and migrations are reviewed SQL rather than push. Do not use this old document as a release certificate.
+
 Durable record of architecture decisions, so development can resume reliably
 across sessions. Last updated: 2026-10-13 — A+ production-hardened.
 

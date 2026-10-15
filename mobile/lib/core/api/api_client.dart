@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:uuid/uuid.dart';
 import 'package:http/http.dart' as http;
 
 /// Thin client for the Meqwat API. Auth uses the same httpOnly cookie
@@ -19,6 +20,7 @@ class ApiClient {
   final String baseUrl;
   final http.Client _client;
   String? _cookie;
+  void clearSession() { _cookie = null; }
 
   Future<void> login(String email, String password) async {
     final res = await _client.post(
@@ -32,7 +34,7 @@ class ApiClient {
 
   Future<Map<String, dynamic>> get(String path) async => _request('GET', path);
   Future<Map<String, dynamic>> post(String path, Map<String, dynamic> body) async =>
-      _request('POST', path, body: body);
+      _request('POST', path, body: {'clientMutationId': const Uuid().v4(), ...body});
 
   Future<Map<String, dynamic>> _request(String method, String path, {Map<String, dynamic>? body, bool retried = false}) async {
     final req = http.Request(method, Uri.parse('$baseUrl$path'));
@@ -65,8 +67,15 @@ class ApiClient {
   void _storeCookie(http.Response res) {
     final raw = res.headers['set-cookie'];
     if (raw != null && raw.isNotEmpty) {
-      // Keep name=value pairs only (drop attributes) for the Cookie header.
-      _cookie = raw.split(',').map((c) => c.split(';').first.trim()).where((c) => c.contains('=')).join('; ');
+      final pairs = <String,String>{};
+      for (final match in RegExp(r'(meqwat_at|meqwat_rt)=([^;,\s]*)').allMatches(_cookie ?? '')) {
+        pairs[match.group(1)!] = match.group(2)!;
+      }
+      for (final match in RegExp(r'(meqwat_at|meqwat_rt)=([^;,\s]*)').allMatches(raw)) {
+        if (match.group(2)!.isEmpty) { pairs.remove(match.group(1)); }
+        else { pairs[match.group(1)!] = match.group(2)!; }
+      }
+      _cookie = pairs.entries.map((e) => '${e.key}=${e.value}').join('; ');
     }
   }
 

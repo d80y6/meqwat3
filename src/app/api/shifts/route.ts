@@ -13,6 +13,7 @@ export const GET = handler(async (req: Request) => {
   const url = new URL(req.url);
   const status = url.searchParams.get("status");
   const conds = [eq(shifts.tenantId, user.tenantId)];
+  if (user.role === "cashier") conds.push(eq(shifts.userId, user.id));
   if (status === "open" || status === "closed") conds.push(eq(shifts.status, status));
   const rows = await db
     .select({ shift: shifts, registerName: cashRegisters.name, userName: users.name })

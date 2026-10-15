@@ -43,7 +43,7 @@ export default function AdminPage() {
     } catch (e) { toast.push("error", e instanceof Error ? e.message : "تعذر التحميل — تأكد من صلاحية مدير المنصة"); }
     finally { setLoading(false); }
   }, [toast]);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { const timer = setTimeout(() => void load(), 0); return () => clearTimeout(timer); }, [load]);
 
   const pending = requests.filter((r) => r.status === "pending");
 

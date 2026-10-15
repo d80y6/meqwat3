@@ -56,13 +56,20 @@ test.describe("authenticated tenant journeys", () => {
     await productButton.click();
     await expect(page.getByText("سلة البيع")).toBeVisible();
 
+    const posted = page.waitForResponse(r => r.url().endsWith("/api/sales") && r.request().method() === "POST");
     await page.getByRole("button", { name: /إتمام البيع/ }).click();
-    await expect(page.getByText(/تم إصدار الفاتورة #\d+ بنجاح/)).toBeVisible({ timeout: 15_000 });
+    const response = await posted;
+    expect(response.status()).toBe(201);
+    const invoice = (await response.json()).data;
+    await expect(page.getByText(`تم حفظ الفاتورة #${invoice.invoiceNo}`, {exact:true})).toBeVisible();
 
     // The server-confirmed invoice must be listed in sales.
     await page.goto("/sales");
     await expect(page.getByRole("heading", { name: "المبيعات والفواتير" })).toBeVisible();
-    await expect(page.locator("table tbody tr").first()).toBeVisible();
+    await expect(page.locator("table tbody")).toContainText(String(invoice.invoiceNo));
+    await page.reload();
+    const persisted = await page.request.get("/api/sales");
+    expect((await persisted.json()).data.items.some((sale: {id:string}) => sale.id === invoice.id)).toBe(true);
   });
 
   test("cashier cannot see owner-only navigation (users/subscription)", async ({ page }) => {

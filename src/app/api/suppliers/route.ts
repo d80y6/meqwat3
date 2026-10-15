@@ -6,7 +6,7 @@ import { ok, handler, requireTenantUser, parsePagination, escapeIlike, audit, Ap
 export const dynamic = "force-dynamic";
 
 export const GET = handler(async (req: Request) => {
-  const user = await requireTenantUser();
+  const user = await requireTenantUser("suppliers:manage");
   const { limit, offset, search } = parsePagination(req);
   const url = new URL(req.url);
   const withLiability = url.searchParams.get("debt") === "1";

@@ -39,7 +39,7 @@ export const POST = handler(async (req: Request) => {
 
   const [created] = await db
     .insert(users)
-    .values({ tenantId: user.tenantId, name, email, phone: body?.phone ?? null, passwordHash: await hashPassword(password), role })
+    .values({ tenantId: user.tenantId, name, email, phone: body?.phone ?? null, passwordHash: await hashPassword(password), mustChangePassword: true, role })
     .returning({ id: users.id, name: users.name, email: users.email, role: users.role, isActive: users.isActive });
   await audit(user, "user.create", "user", created.id, { email, role });
   return ok(created, 201);

@@ -7,6 +7,7 @@ export default defineConfig({
   },
   test: {
     environment: "node",
+    setupFiles: ["./tests/test-database-safety.ts"],
     include: ["tests/**/*.test.ts"],
     testTimeout: 30000,
     hookTimeout: 30000,

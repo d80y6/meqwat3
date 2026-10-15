@@ -1,13 +1,14 @@
+import { subMoney } from "@/lib/money";
 import { db } from "@/db";
 import { purchases, purchaseItems, products, suppliers } from "@/db/schema";
-import { and, eq, desc, count } from "drizzle-orm";
-import { ok, handler, requireTenantUser, parsePagination, audit, ApiError } from "@/lib/api";
+import { and, eq, desc, count, inArray } from "drizzle-orm";
+import { requireMutationId, ok, handler, requireTenantUser, parsePagination, audit, ApiError } from "@/lib/api";
 import { assertTenantWritable, createPurchase } from "@/lib/services";
 
 export const dynamic = "force-dynamic";
 
 export const GET = handler(async (req: Request) => {
-  const user = await requireTenantUser();
+  const user = await requireTenantUser("purchases:manage");
   const { limit, offset } = parsePagination(req);
   const url = new URL(req.url);
   const conds = [eq(purchases.tenantId, user.tenantId)];
@@ -31,7 +32,7 @@ export const GET = handler(async (req: Request) => {
         .select({ item: purchaseItems, productName: products.name, unit: products.unit })
         .from(purchaseItems)
         .innerJoin(products, eq(purchaseItems.productId, products.id))
-        .where(eq(purchaseItems.tenantId, user.tenantId))
+        .where(and(eq(purchaseItems.tenantId, user.tenantId), inArray(purchaseItems.purchaseId, ids)))
     : [];
   const byPurchase = new Map<string, unknown[]>();
   for (const row of items) {
@@ -44,7 +45,7 @@ export const GET = handler(async (req: Request) => {
     items: rows.map((r) => ({
       ...r.purchase,
       supplierName: r.supplierName,
-      remaining: (Number(r.purchase.totalAmount) - Number(r.purchase.paidAmount)).toFixed(2),
+      remaining: subMoney(r.purchase.totalAmount, r.purchase.paidAmount),
       items: byPurchase.get(r.purchase.id) ?? [],
     })),
     total: total[0]?.c ?? 0,
@@ -55,6 +56,7 @@ export const POST = handler(async (req: Request) => {
   const user = await requireTenantUser("purchases:manage");
   await assertTenantWritable(user.tenantId);
   const body = await req.json();
+  requireMutationId(body);
   if (!body?.supplierId) throw new ApiError("اختر المورّد");
   if (!Array.isArray(body?.items) || body.items.length === 0) throw new ApiError("أضف صنفاً واحداً على الأقل");
   const result = await createPurchase(

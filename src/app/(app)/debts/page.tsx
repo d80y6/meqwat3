@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { HandCoins, Wallet, Truck } from "lucide-react";
 import { apiGet, apiPost } from "@/lib/client";
-import { fmtMoney } from "@/lib/money";
+import { fmtMoney, addMoney, subMoney } from "@/lib/money";
 import { Btn, Field, Input, Modal, PageHeader, TableShell, Badge, EmptyState, Loading, StatCard, useToast } from "@/components/ui";
 
 interface Party { id: string; name: string; phone: string | null; balance: string; creditLimit?: string }
@@ -40,10 +40,10 @@ export default function DebtsPage() {
     } catch (e) { toast.push("error", e instanceof Error ? e.message : "تعذر التحميل"); }
     finally { setLoading(false); }
   }, [toast]);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { const timer = setTimeout(() => void load(), 0); return () => clearTimeout(timer); }, [load]);
 
-  const totalReceivables = customers.reduce((s, c) => s + Number(c.balance), 0);
-  const totalPayables = suppliers.reduce((s, c) => s + Number(c.balance), 0);
+  const totalReceivables = customers.reduce((s, c) => addMoney(s, c.balance), "0");
+  const totalPayables = suppliers.reduce((s, c) => addMoney(s, c.balance), "0");
 
   async function submitPayment() {
     if (!payTarget) return;
@@ -75,7 +75,7 @@ export default function DebtsPage() {
       <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
         <StatCard label="إجمالي ديون العملاء (لنا)" value={fmtMoney(totalReceivables)} icon={<Wallet className="h-5 w-5" />} tone="amber" />
         <StatCard label="إجمالي مستحقات المورّدين (علينا)" value={fmtMoney(totalPayables)} icon={<Truck className="h-5 w-5" />} tone="red" />
-        <StatCard label="صافي المركز الائتماني" value={fmtMoney(totalReceivables - totalPayables)} sub="الديون لنا ناقص المستحقات علينا" icon={<HandCoins className="h-5 w-5" />} />
+        <StatCard label="صافي المركز الائتماني" value={fmtMoney(subMoney(totalReceivables, totalPayables))} sub="الديون لنا ناقص المستحقات علينا" icon={<HandCoins className="h-5 w-5" />} />
       </div>
 
       <div className="mb-4 flex gap-2" role="tablist" aria-label="أقسام الديون">

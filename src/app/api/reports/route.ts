@@ -1,17 +1,15 @@
+import { toCents, fromCents } from "@/lib/money";
 import { db } from "@/db";
-import { sales, saleItems, products, financialTransactions, inventoryMovements } from "@/db/schema";
+import { sales, financialTransactions, inventoryMovements } from "@/db/schema";
 import { and, eq, gte, lte, sql } from "drizzle-orm";
-import { ok, handler, requireTenantUser } from "@/lib/api";
+import { ok, handler, requireTenantUser, parseDateRange } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
 
 export const GET = handler(async (req: Request) => {
   const user = await requireTenantUser("reports:view");
   const tid = user.tenantId;
-  const url = new URL(req.url);
-  const now = new Date();
-  const from = url.searchParams.get("from") ? new Date(url.searchParams.get("from")!) : new Date(now.getTime() - 30 * 86400_000);
-  const to = url.searchParams.get("to") ? new Date(url.searchParams.get("to")!) : now;
+  const { from, to } = parseDateRange(req);
 
   const [salesSummary] = await db
     .select({
@@ -26,28 +24,29 @@ export const GET = handler(async (req: Request) => {
     .where(and(eq(sales.tenantId, tid), gte(sales.saleDate, from), lte(sales.saleDate, to)));
 
   const [cogsRow] = await db
-    .select({ cogs: sql<string>`coalesce(sum(si.qty * si.cost_price),0)` })
+    .select({ cogs: sql<string>`coalesce(round(sum((si.qty - si.returned_qty) * si.cost_price),2),0)` })
     .from(sql`sale_items si inner join sales s on s.id = si.sale_id`)
     .where(sql`si.tenant_id = ${tid} and s.sale_date >= ${from.toISOString()} and s.sale_date <= ${to.toISOString()}`);
 
-  const topProducts = await db
-    .select({
-      productId: saleItems.productId,
-      name: products.name,
-      qtySold: sql<string>`coalesce(sum(${saleItems.qty} - ${saleItems.returnedQty}),0)`,
-      revenue: sql<string>`coalesce(sum(${saleItems.total}),0)`,
-      profit: sql<string>`coalesce(sum((${saleItems.qty} - ${saleItems.returnedQty}) * (${saleItems.unitPrice} - ${saleItems.costPrice})),0)`,
-    })
-    .from(saleItems)
-    .innerJoin(products, eq(saleItems.productId, products.id))
-    .innerJoin(sales, eq(saleItems.saleId, sales.id))
-    .where(and(eq(saleItems.tenantId, tid), gte(sales.saleDate, from), lte(sales.saleDate, to)))
-    .groupBy(saleItems.productId, products.name)
-    .orderBy(sql`sum(${saleItems.total}) desc`)
-    .limit(10);
+  // Same cumulative-cent discount allocation used by the return service.
+  const topResult = await db.execute(sql`
+    with allocated as (
+      select si.*, p.name,
+        round(sum(si.total) over (partition by si.sale_id order by si.id) * (s.total_amount-s.discount) / nullif(s.total_amount,0), 2)
+        - round((sum(si.total) over (partition by si.sale_id order by si.id) - si.total) * (s.total_amount-s.discount) / nullif(s.total_amount,0), 2) as net
+      from sale_items si join sales s on s.id=si.sale_id join products p on p.id=si.product_id
+      where si.tenant_id=${tid} and s.sale_date>=${from.toISOString()} and s.sale_date<=${to.toISOString()}
+    ), remaining as (
+      select *, coalesce(net-round(net*returned_qty/nullif(qty,0),2),0) as revenue,
+        round((qty-returned_qty)*cost_price,2) as cost from allocated
+    )
+    select product_id as "productId", name, sum(qty-returned_qty)::text as "qtySold",
+      sum(revenue)::text as revenue, sum(revenue-cost)::text as profit
+    from remaining group by product_id,name order by sum(revenue) desc limit 10`);
+  const topProducts = topResult.rows;
 
   const byPayment = await db
-    .select({ method: sales.paymentMethod, total: sql<string>`coalesce(sum(${sales.totalAmount} - ${sales.discount}),0)`, count: sql<number>`count(*)::int` })
+    .select({ method: sales.paymentMethod, total: sql<string>`coalesce(sum(${sales.totalAmount} - ${sales.discount} - ${sales.returnedAmount}),0)`, count: sql<number>`count(*)::int` })
     .from(sales)
     .where(and(eq(sales.tenantId, tid), gte(sales.saleDate, from), lte(sales.saleDate, to)))
     .groupBy(sales.paymentMethod);
@@ -55,7 +54,7 @@ export const GET = handler(async (req: Request) => {
   const [spoilage] = await db
     .select({
       qty: sql<string>`coalesce(sum(-${inventoryMovements.qty}),0)`,
-      value: sql<string>`coalesce(sum(-${inventoryMovements.qty} * coalesce(${inventoryMovements.unitCost},0)),0)`,
+      value: sql<string>`coalesce(round(sum(-${inventoryMovements.qty} * coalesce(${inventoryMovements.unitCost},0)),2),0)`,
     })
     .from(inventoryMovements)
     .where(and(eq(inventoryMovements.tenantId, tid), eq(inventoryMovements.type, "spoilage"), gte(inventoryMovements.createdAt, from), lte(inventoryMovements.createdAt, to)));
@@ -66,12 +65,12 @@ export const GET = handler(async (req: Request) => {
     .where(and(eq(financialTransactions.tenantId, tid), gte(financialTransactions.createdAt, from), lte(financialTransactions.createdAt, to)))
     .groupBy(financialTransactions.type);
 
-  const netRevenue = Number(salesSummary?.gross ?? 0) - Number(salesSummary?.discounts ?? 0) - Number(salesSummary?.returns ?? 0);
+  const netRevenue = toCents(salesSummary?.gross ?? 0) - toCents(salesSummary?.discounts ?? 0) - toCents(salesSummary?.returns ?? 0);
   return ok({
     range: { from, to },
     sales: salesSummary,
     cogs: cogsRow?.cogs ?? "0",
-    grossProfit: (netRevenue - Number(cogsRow?.cogs ?? 0)).toFixed(2),
+    grossProfit: fromCents(netRevenue - toCents(cogsRow?.cogs ?? 0)),
     topProducts,
     byPayment,
     spoilage,

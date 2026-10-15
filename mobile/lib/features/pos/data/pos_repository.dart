@@ -15,7 +15,9 @@ class PosRepository {
   final _uuid = const Uuid();
 
   Future<void> refreshCatalog() async {
+    final owner = db.ownerKey;
     final data = await api.get('/api/products?active=1&limit=200');
+    if (owner == null || owner != db.ownerKey) throw StateError('Session changed');
     final items = (data['items'] as List).cast<Map<String, dynamic>>();
     await db.replaceProducts(items.map((p) => {
           'id': p['id'],

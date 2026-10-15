@@ -2,7 +2,7 @@ import { SignJWT, jwtVerify } from "jose";
 import bcrypt from "bcryptjs";
 import { createHash, randomBytes } from "crypto";
 import { cookies, headers } from "next/headers";
-import { db } from "@/db";
+import { authDb as db } from "@/db";
 import { sessions, users, tenants } from "@/db/schema";
 import { and, eq, gt, isNull } from "drizzle-orm";
 import type { Role } from "./permissions";
@@ -37,17 +37,14 @@ function secret(): Uint8Array {
       "[auth] AUTH_SECRET is required in production — set a 32+ char random value (openssl rand -hex 32). Refusing to start with derived secret."
     );
   }
-  // Development fallback: derive a per-deployment secret from the server-only
-  // database credentials so tokens stay unforgeable without DB access in dev.
-  console.warn("[auth] AUTH_SECRET not set — deriving signing secret from DATABASE_URL (dev only). Set AUTH_SECRET in production.");
-  const derived = createHash("sha256")
-    .update(`meqwat::${process.env.DATABASE_URL ?? "meqwat-dev"}`)
-    .digest("hex");
-  cachedSecret = new TextEncoder().encode(derived);
+  // Ephemeral development secret: never derive a forgeable default from a known URL.
+  console.warn("[auth] Using ephemeral development signing key; set AUTH_SECRET for stable sessions.");
+  cachedSecret = randomBytes(32);
   return cachedSecret;
 }
 
 export async function hashPassword(password: string): Promise<string> {
+  if (Buffer.byteLength(password, "utf8") > 72 || password.length < 8) throw new RangeError("Password must be 8+ characters and at most 72 UTF-8 bytes");
   return bcrypt.hash(password, 12);
 }
 export async function verifyPassword(password: string, hash: string): Promise<boolean> {
@@ -58,14 +55,16 @@ const sha256 = (v: string) => createHash("sha256").update(v).digest("hex");
 
 export interface AuthUser {
   id: string;
+  sessionId?: string;
+  mustChangePassword?: boolean;
   tenantId: string | null;
   email: string;
   name: string;
   role: Role;
 }
 
-async function signAccess(user: AuthUser): Promise<string> {
-  return new SignJWT({ tid: user.tenantId, role: user.role, name: user.name, email: user.email })
+async function signAccess(user: AuthUser, sessionId: string): Promise<string> {
+  return new SignJWT({ sid: sessionId, tid: user.tenantId, role: user.role, name: user.name, email: user.email })
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(user.id)
     .setIssuedAt()
@@ -78,6 +77,7 @@ export async function verifyAccessToken(token: string): Promise<AuthUser | null>
     const { payload } = await jwtVerify(token, secret());
     return {
       id: String(payload.sub),
+      sessionId: typeof payload.sid === "string" ? payload.sid : undefined,
       tenantId: (payload.tid as string | null) ?? null,
       email: String(payload.email ?? ""),
       name: String(payload.name ?? ""),
@@ -102,14 +102,14 @@ async function setCookies(access: string, refresh: string) {
 export async function createSession(user: AuthUser): Promise<void> {
   const refresh = randomBytes(48).toString("base64url");
   const hdrs = await headers();
-  await db.insert(sessions).values({
+  const [session] = await db.insert(sessions).values({
     userId: user.id,
     refreshTokenHash: sha256(refresh),
     userAgent: hdrs.get("user-agent")?.slice(0, 300),
     ip: hdrs.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null,
     expiresAt: new Date(Date.now() + REFRESH_TTL_DAYS * 86400_000),
-  });
-  await setCookies(await signAccess(user), refresh);
+  }).returning();
+  await setCookies(await signAccess(user, session.id), refresh);
 }
 
 /** Rotate refresh token; returns fresh AuthUser or null (revoked/expired/reuse). */
@@ -118,25 +118,29 @@ export async function rotateRefreshSession(): Promise<AuthUser | null> {
   const refresh = store.get(REFRESH_COOKIE)?.value;
   if (!refresh) return null;
   const hash = sha256(refresh);
-  const [session] = await db
-    .select()
-    .from(sessions)
-    .where(and(eq(sessions.refreshTokenHash, hash), isNull(sessions.revokedAt), gt(sessions.expiresAt, new Date())))
-    .limit(1);
-  if (!session) return null;
-  const [user] = await db.select().from(users).where(eq(users.id, session.userId)).limit(1);
-  if (!user || !user.isActive) return null;
-  if (user.tenantId) {
-    const [tenant] = await db.select().from(tenants).where(eq(tenants.id, user.tenantId)).limit(1);
-    if (!tenant || tenant.status !== "active") return null;
-  }
-  // Revoke old session (rotation) and issue a new one.
-  await db.update(sessions).set({ revokedAt: new Date() }).where(eq(sessions.id, session.id));
-  const authUser: AuthUser = {
-    id: user.id, tenantId: user.tenantId, email: user.email, name: user.name, role: user.role as Role,
-  };
-  await createSession(authUser);
-  return authUser;
+  const nextRefresh = randomBytes(48).toString("base64url");
+  const result = await db.transaction(async (tx) => {
+    // Conditional UPDATE consumes the old token once, even for concurrent requests.
+    const [session] = await tx.update(sessions).set({ revokedAt: new Date() })
+      .where(and(eq(sessions.refreshTokenHash, hash), isNull(sessions.revokedAt), gt(sessions.expiresAt, new Date())))
+      .returning();
+    if (!session) return null;
+    const [user] = await tx.select().from(users).where(eq(users.id, session.userId)).limit(1);
+    if (!user || !user.isActive) return null;
+    if (user.tenantId) {
+      const [tenant] = await tx.select().from(tenants).where(eq(tenants.id, user.tenantId)).limit(1);
+      if (!tenant || tenant.status !== "active") return null;
+    }
+    const [next] = await tx.insert(sessions).values({
+      userId: user.id, refreshTokenHash: sha256(nextRefresh),
+      expiresAt: new Date(Date.now() + REFRESH_TTL_DAYS * 86400_000),
+    }).returning();
+    const authUser: AuthUser = { id: user.id, tenantId: user.tenantId, email: user.email, name: user.name, role: user.role as Role };
+    return { authUser, access: await signAccess(authUser, next.id) };
+  });
+  if (!result) return null;
+  await setCookies(result.access, nextRefresh);
+  return result.authUser;
 }
 
 export async function destroySession(): Promise<void> {
@@ -154,7 +158,16 @@ export async function getCurrentUser(): Promise<AuthUser | null> {
   const store = await cookies();
   const token = store.get(ACCESS_COOKIE)?.value;
   if (!token) return null;
-  return verifyAccessToken(token);
+  const claims = await verifyAccessToken(token);
+  if (!claims?.sessionId) return null;
+  const [row] = await db.select({ user: users, tenantStatus: tenants.status }).from(sessions)
+    .innerJoin(users, eq(users.id, sessions.userId))
+    .leftJoin(tenants, eq(tenants.id, users.tenantId))
+    .where(and(eq(sessions.id, claims.sessionId), eq(sessions.userId, claims.id),
+      isNull(sessions.revokedAt), gt(sessions.expiresAt, new Date()))).limit(1);
+  if (!row?.user.isActive || (row.user.tenantId && row.tenantStatus !== "active")) return null;
+  return { id: row.user.id, tenantId: row.user.tenantId, role: row.user.role,
+    email: row.user.email, name: row.user.name, mustChangePassword: row.user.mustChangePassword };
 }
 
 export { ACCESS_COOKIE, REFRESH_COOKIE };

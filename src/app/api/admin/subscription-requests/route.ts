@@ -1,6 +1,6 @@
 import { db } from "@/db";
 import { subscriptionRequests, plans } from "@/db/schema";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, and } from "drizzle-orm";
 import { ok, handler, requireUser, requireRole, audit, ApiError } from "@/lib/api";
 import { approveRequest } from "@/lib/provision";
 
@@ -36,8 +36,9 @@ export const POST = handler(async (req: Request) => {
     const [updated] = await db
       .update(subscriptionRequests)
       .set({ status: "rejected", reviewedBy: user.id, reviewedAt: new Date(), notes: body?.notes ?? request.notes })
-      .where(eq(subscriptionRequests.id, requestId))
+      .where(and(eq(subscriptionRequests.id, requestId), eq(subscriptionRequests.status, "pending")))
       .returning();
+    if (!updated) throw new ApiError("تمت مراجعة هذا الطلب مسبقاً", 409);
     await audit(user, "admin.request.reject", "subscription_request", requestId);
     return ok(updated);
   }

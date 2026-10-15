@@ -11,6 +11,7 @@ import {
   jsonb,
   index,
   uniqueIndex,
+  primaryKey,
 } from "drizzle-orm/pg-core";
 
 /**
@@ -563,4 +564,22 @@ export const rateLimitBuckets = pgTable("rate_limit_buckets", {
   key: text("key").primaryKey(),
   count: integer("count").notNull(),
   resetsAt: ts("resets_at").notNull(),
+});
+
+
+/** Platform operations and billing are distinct from tenant operational ledgers. */
+export const adminMutations=pgTable('admin_mutations',{
+  actorId:uuid('actor_id').notNull().references(()=>users.id,{onDelete:'cascade'}),
+  mutationId:varchar('mutation_id',{length:80}).notNull(),fingerprint:text('fingerprint').notNull(),
+  result:jsonb('result').notNull(),createdAt:ts('created_at').notNull().defaultNow(),
+},t=>[primaryKey({columns:[t.actorId,t.mutationId]})]);
+export const platformInvoices=pgTable('platform_invoices',{
+  id:uuid('id').primaryKey().defaultRandom(),tenantId:uuid('tenant_id').notNull().references(()=>tenants.id),
+  description:text('description').notNull(),amount:money('amount').notNull(),currency:varchar('currency',{length:8}).notNull().default('YER'),
+  dueAt:ts('due_at').notNull(),createdBy:uuid('created_by').notNull().references(()=>users.id),createdAt:ts('created_at').notNull().defaultNow(),
+});
+export const platformReceipts=pgTable('platform_receipts',{
+  id:uuid('id').primaryKey().defaultRandom(),invoiceId:uuid('invoice_id').notNull().references(()=>platformInvoices.id),
+  kind:text('kind').notNull(),amount:money('amount').notNull(),reference:text('reference').notNull(),
+  createdBy:uuid('created_by').notNull().references(()=>users.id),createdAt:ts('created_at').notNull().defaultNow(),
 });

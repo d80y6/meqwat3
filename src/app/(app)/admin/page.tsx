@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { Building2, Inbox, CreditCard, Plus, Ban, CheckCircle2, KeyRound, XCircle } from "lucide-react";
 import { apiGet, apiPost, apiPatch } from "@/lib/client";
@@ -15,7 +16,16 @@ interface PlanRow { id: string; name: string; priceMonthly: string; maxUsers: nu
 
 export default function AdminPage() {
   const toast = useToast();
-  const [tab, setTab] = useState<"tenants" | "requests" | "plans">("tenants");
+  const [tab, setTab] = useState<"tenants" | "requests" | "plans" | "audit">("tenants");
+  const [search,setSearch]=useState("");
+  const [offset,setOffset]=useState(0);
+  const [totals,setTotals]=useState({tenants:0,requests:0,audit:0});
+  const [requestStatus,setRequestStatus]=useState("");
+  const [events,setEvents]=useState<{id:string;action:string;userName:string|null;createdAt:string;metadata:unknown}[]>([]);
+  const [busy,setBusy]=useState(false);
+  const [editPlan,setEditPlan]=useState<string|null>(null);
+  const [subscriptionStatus,setSubscriptionStatus]=useState("");
+  const [exactEnd,setExactEnd]=useState("");
   const [tenants, setTenants] = useState<TenantRow[]>([]);
   const [requests, setRequests] = useState<RequestRow[]>([]);
   const [plans, setPlans] = useState<PlanRow[]>([]);
@@ -27,59 +37,73 @@ export default function AdminPage() {
   const [managePlan, setManagePlan] = useState("");
   const [extendDays, setExtendDays] = useState("30");
   const [planModal, setPlanModal] = useState(false);
-  const [planForm, setPlanForm] = useState({ name: "", priceMonthly: "0", maxUsers: "3", maxProducts: "100", maxBranches: "1" });
+  const [planForm, setPlanForm] = useState({ name: "", priceMonthly: "0", maxUsers: "3", maxProducts: "100", maxBranches: "1", features:"", isActive:true });
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [t, r, p] = await Promise.all([
-        apiGet<{ items: TenantRow[] }>("/api/admin/tenants"),
-        apiGet<{ items: RequestRow[] }>("/api/admin/subscription-requests"),
+      const query=`limit=25&offset=${offset}&search=${encodeURIComponent(search)}`;
+      const [t, r, p, a] = await Promise.all([
+        apiGet<{ items: TenantRow[];total:number }>(`/api/admin/tenants?${query}`),
+        apiGet<{ items: RequestRow[];total:number }>(`/api/admin/subscription-requests?${query}&status=${requestStatus}`),
         apiGet<{ items: PlanRow[] }>("/api/admin/plans"),
+        apiGet<{items:typeof events;total:number}>(`/api/admin/audit?${query}`),
       ]);
+      setTotals({tenants:t.total,requests:r.total,audit:a.total});setEvents(a.items);
       setTenants(t.items);
       setRequests(r.items);
       setPlans(p.items);
     } catch (e) { toast.push("error", e instanceof Error ? e.message : "تعذر التحميل — تأكد من صلاحية مدير المنصة"); }
     finally { setLoading(false); }
-  }, [toast]);
+  }, [toast,offset,search,requestStatus]);
   useEffect(() => { const timer = setTimeout(() => void load(), 0); return () => clearTimeout(timer); }, [load]);
 
   const pending = requests.filter((r) => r.status === "pending");
 
   async function createTenant(e: React.FormEvent) {
     e.preventDefault();
+    if(busy)return;setBusy(true);
     try {
       const res = await apiPost<{ tenant: { name: string }; owner: { email: string }; tempPassword: string }>("/api/admin/tenants", form);
       setCredentials({ email: res.owner.email, tempPassword: res.tempPassword, tenantName: res.tenant.name });
       setCreateModal(false);
       void load();
     } catch (err) { toast.push("error", err instanceof Error ? err.message : "تعذر الإنشاء"); }
+    finally {setBusy(false);}
   }
 
   async function toggleTenant(t: TenantRow) {
+    if(!confirm("تأكيد تغيير حالة المتجر؟"))return;
     const next = t.tenant.status === "active" ? "suspended" : "active";
+    if(busy)return;setBusy(true);
     try {
       await apiPatch(`/api/admin/tenants/${t.tenant.id}`, { status: next });
       toast.push("success", next === "suspended" ? "تم إيقاف المتجر" : "تم تفعيل المتجر");
       void load();
     } catch (e) { toast.push("error", e instanceof Error ? e.message : "تعذر التنفيذ"); }
+    finally {setBusy(false);}
   }
 
   async function applyManage() {
     if (!manageFor) return;
+    if(busy)return;setBusy(true);
     try {
       await apiPatch(`/api/admin/tenants/${manageFor.tenant.id}`, {
         planId: managePlan || undefined,
-        extendDays: extendDays ? Number(extendDays) : undefined,
+        extendDays: exactEnd ? undefined : extendDays ? Number(extendDays) : undefined,
+        subscriptionStatus: subscriptionStatus || undefined, endsAt: exactEnd ? `${exactEnd}T23:59:59+03:00` : undefined,
       });
       toast.push("success", "تم تحديث اشتراك المتجر");
       setManageFor(null);
       void load();
     } catch (e) { toast.push("error", e instanceof Error ? e.message : "تعذر التحديث"); }
+    finally {setBusy(false);}
   }
 
   async function review(req: RequestRow, action: "approve" | "reject") {
+    const notes=action==="reject"?prompt("سبب الرفض (يظهر في سجل الطلب)"):undefined;
+    if(notes===null)return;
+    if(busy)return;setBusy(true);
     try {
       if (action === "approve") {
         const res = await apiPost<{ tenant: { name: string }; ownerEmail: string; tempPassword: string | null; upgraded: boolean; planName: string }>("/api/admin/subscription-requests", { requestId: req.id, action });
@@ -90,17 +114,20 @@ export default function AdminPage() {
           toast.push("success", "تمت الموافقة وإنشاء المتجر");
         }
       } else {
-        await apiPost("/api/admin/subscription-requests", { requestId: req.id, action });
+        await apiPost("/api/admin/subscription-requests", { requestId: req.id, action, notes });
         toast.push("success", "تم رفض الطلب");
       }
       void load();
     } catch (e) { toast.push("error", e instanceof Error ? e.message : "تعذر تنفيذ الإجراء"); }
+    finally {setBusy(false);}
   }
 
   async function savePlan(e: React.FormEvent) {
     e.preventDefault();
+    if(busy)return;setBusy(true);
     try {
-      await apiPost("/api/admin/plans", {
+      await (editPlan ? apiPatch : apiPost)("/api/admin/plans", {
+        id:editPlan??undefined,features:planForm.features.split("\n").map(v=>v.trim()).filter(Boolean),isActive:planForm.isActive,
         name: planForm.name, priceMonthly: planForm.priceMonthly,
         maxUsers: Number(planForm.maxUsers), maxProducts: Number(planForm.maxProducts), maxBranches: Number(planForm.maxBranches),
       });
@@ -108,11 +135,13 @@ export default function AdminPage() {
       setPlanModal(false);
       void load();
     } catch (err) { toast.push("error", err instanceof Error ? err.message : "تعذر الحفظ"); }
+    finally {setBusy(false);}
   }
 
   const tabs = [
     { key: "tenants" as const, label: "المتاجر المشتركة", icon: <Building2 className="h-4 w-4" /> },
     { key: "requests" as const, label: `طلبات الاشتراك (${pending.length} بانتظار)`, icon: <Inbox className="h-4 w-4" /> },
+    { key: "audit" as const, label:"سجل المنصة",icon:<Inbox className="h-4 w-4" /> },
     { key: "plans" as const, label: "الباقات", icon: <CreditCard className="h-4 w-4" /> },
   ];
 
@@ -121,27 +150,34 @@ export default function AdminPage() {
       <PageHeader title="إدارة المنصة" subtitle="المتاجر والاشتراكات والباقات — صلاحية مدير المنصة فقط" actions={tab === "tenants" ? <Btn onClick={() => setCreateModal(true)}><Plus className="h-4 w-4" /> إنشاء متجر</Btn> : undefined} />
 
       <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <StatCard label="إجمالي المتاجر" value={String(tenants.length)} />
-        <StatCard label="متاجر نشطة" value={String(tenants.filter((t) => t.tenant.status === "active").length)} />
-        <StatCard label="طلبات بانتظار المراجعة" value={String(pending.length)} tone="amber" />
-        <StatCard label="بيئات تجريبية" value={String(tenants.filter((t) => t.tenant.isDemo).length)} sub="مفصولة عن متاجر الإنتاج" tone="blue" />
+        <StatCard label="إجمالي المتاجر" value={String(totals.tenants)} />
+        <StatCard label="نشطة في الصفحة" value={String(tenants.filter((t) => t.tenant.status === "active").length)} />
+        <StatCard label="بانتظار المراجعة في الصفحة" value={String(pending.length)} tone="amber" />
+        <StatCard label="تجريبية في الصفحة" value={String(tenants.filter((t) => t.tenant.isDemo).length)} sub="مفصولة عن متاجر الإنتاج" tone="blue" />
       </div>
 
-      <div className="mb-4 flex gap-2" role="tablist">
+      <div className="mb-4 flex flex-wrap gap-2" role="tablist">
         {tabs.map((t) => (
-          <button key={t.key} role="tab" aria-selected={tab === t.key} onClick={() => setTab(t.key)} className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold ${tab === t.key ? "bg-leaf-700 text-white" : "bg-white text-slate-600 ring-1 ring-slate-200"}`}>
+          <button key={t.key} role="tab" aria-selected={tab === t.key} onClick={() => {setTab(t.key);setOffset(0);setSearch("");}} className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold ${tab === t.key ? "bg-leaf-700 text-white" : "bg-white text-slate-600 ring-1 ring-slate-200"}`}>
             {t.icon} {t.label}
           </button>
         ))}
       </div>
 
-      {loading ? <Loading /> : tab === "tenants" ? (
+      {tab!=="plans"&&<div className="mb-4 flex flex-wrap gap-2">
+        <Input aria-label="بحث الإدارة" placeholder={tab==="audit"?"ابحث باسم الإجراء":"بحث بالاسم أو البريد"} value={search} onChange={e=>{setSearch(e.target.value);setOffset(0);}} />
+        {tab==="requests"&&<Select aria-label="حالة الطلب" value={requestStatus} onChange={e=>{setRequestStatus(e.target.value);setOffset(0);}}><option value="">كل الحالات</option><option value="pending">بانتظار</option><option value="approved">مقبول</option><option value="rejected">مرفوض</option></Select>}
+        <Btn variant="secondary" disabled={offset===0} onClick={()=>setOffset(Math.max(0,offset-25))}>السابق</Btn>
+        <span>{offset+1}–{Math.min(offset+25,totals[tab])} / {totals[tab]}</span>
+        <Btn variant="secondary" disabled={offset+25>=totals[tab]} onClick={()=>setOffset(offset+25)}>التالي</Btn>
+      </div>}
+      {loading ? <Loading /> : tab === "audit" ? <TableShell head={["الوقت","المستخدم","الإجراء","التفاصيل"]}>{events.map(e=><tr key={e.id}><td>{new Date(e.createdAt).toLocaleString('ar-YE')}</td><td>{e.userName??'—'}</td><td>{e.action}</td><td><details><summary>عرض</summary><pre className="max-w-xs whitespace-pre-wrap break-all">{JSON.stringify(e.metadata,null,2)}</pre></details></td></tr>)}</TableShell> : tab === "tenants" ? (
         tenants.length === 0 ? <EmptyState title="لا توجد متاجر" /> : (
           <TableShell head={["المتجر", "الباقة", "الاشتراك", "المستخدمون", "المبيعات", "الحالة", ""]}>
             {tenants.map((t) => (
               <tr key={t.tenant.id} className="border-b border-slate-50">
                 <td className="px-4 py-3">
-                  <p className="font-semibold">{t.tenant.name} {t.tenant.isDemo && <Badge tone="amber">تجريبي</Badge>}</p>
+                  <p className="font-semibold"><Link className="underline" href={`/admin/tenants/${t.tenant.id}`}>{t.tenant.name}</Link> {t.tenant.isDemo && <Badge tone="amber">تجريبي</Badge>}</p>
                   <p className="text-xs text-slate-400">{t.tenant.city ?? ""} · منذ {new Date(t.tenant.createdAt).toLocaleDateString("ar-YE")}</p>
                 </td>
                 <td className="px-4 py-3">{t.planName ?? "—"}</td>
@@ -154,8 +190,8 @@ export default function AdminPage() {
                 <td className="px-4 py-3">{t.tenant.status === "active" ? <Badge tone="green">نشط</Badge> : <Badge tone="red">موقوف</Badge>}</td>
                 <td className="px-4 py-3">
                   <div className="flex gap-1">
-                    <button onClick={() => { setManageFor(t); setManagePlan(""); setExtendDays("30"); }} className="rounded-lg bg-slate-100 px-2 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-200">إدارة الاشتراك</button>
-                    <button onClick={() => toggleTenant(t)} className={`inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-bold ${t.tenant.status === "active" ? "bg-red-50 text-red-600 hover:bg-red-100" : "bg-leaf-50 text-leaf-700"}`}>
+                    <button onClick={() => { setManageFor(t); setManagePlan(""); setExtendDays("0");setSubscriptionStatus("");setExactEnd(""); }} className="rounded-lg bg-slate-100 px-2 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-200">إدارة الاشتراك</button>
+                    <button disabled={busy} onClick={() => toggleTenant(t)} className={`inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-bold ${t.tenant.status === "active" ? "bg-red-50 text-red-600 hover:bg-red-100" : "bg-leaf-50 text-leaf-700"}`}>
                       {t.tenant.status === "active" ? <><Ban className="h-3.5 w-3.5" /> إيقاف</> : <><CheckCircle2 className="h-3.5 w-3.5" /> تفعيل</>}
                     </button>
                   </div>
@@ -177,8 +213,8 @@ export default function AdminPage() {
                 <td className="px-4 py-3">
                   {r.status === "pending" && (
                     <div className="flex gap-1">
-                      <button onClick={() => review(r, "approve")} className="inline-flex items-center gap-1 rounded-lg bg-leaf-700 px-2 py-1.5 text-xs font-bold text-white hover:bg-leaf-800"><CheckCircle2 className="h-3.5 w-3.5" /> قبول وإنشاء</button>
-                      <button onClick={() => review(r, "reject")} className="inline-flex items-center gap-1 rounded-lg bg-red-50 px-2 py-1.5 text-xs font-bold text-red-600 hover:bg-red-100"><XCircle className="h-3.5 w-3.5" /> رفض</button>
+                      <button disabled={busy} onClick={() => review(r, "approve")} className="inline-flex items-center gap-1 rounded-lg bg-leaf-700 px-2 py-1.5 text-xs font-bold text-white hover:bg-leaf-800"><CheckCircle2 className="h-3.5 w-3.5" /> قبول وإنشاء</button>
+                      <button disabled={busy} onClick={() => review(r, "reject")} className="inline-flex items-center gap-1 rounded-lg bg-red-50 px-2 py-1.5 text-xs font-bold text-red-600 hover:bg-red-100"><XCircle className="h-3.5 w-3.5" /> رفض</button>
                     </div>
                   )}
                 </td>
@@ -188,7 +224,7 @@ export default function AdminPage() {
         )
       ) : (
         <div>
-          <TableShell head={["الباقة", "السعر الشهري", "المستخدمون", "الأصناف", "الفروع", "الحالة"]}>
+          <TableShell head={["الباقة", "السعر الشهري", "المستخدمون", "الأصناف", "الفروع", "الحالة", "إدارة"]}>
             {plans.map((p) => (
               <tr key={p.id} className="border-b border-slate-50">
                 <td className="px-4 py-3 font-semibold">{p.name}</td>
@@ -196,11 +232,12 @@ export default function AdminPage() {
                 <td className="px-4 py-3 tabnums">{p.maxUsers}</td>
                 <td className="px-4 py-3 tabnums">{p.maxProducts}</td>
                 <td className="px-4 py-3 tabnums">{p.maxBranches}</td>
+                <td className="px-4 py-3"><Btn variant="secondary" onClick={()=>{setEditPlan(p.id);setPlanForm({name:p.name,priceMonthly:p.priceMonthly,maxUsers:String(p.maxUsers),maxProducts:String(p.maxProducts),maxBranches:String(p.maxBranches),features:p.features.join("\n"),isActive:p.isActive});setPlanModal(true);}}>تعديل</Btn></td>
                 <td className="px-4 py-3">{p.isActive ? <Badge tone="green">مفعّلة</Badge> : <Badge tone="slate">موقوفة</Badge>}</td>
               </tr>
             ))}
           </TableShell>
-          <Btn onClick={() => setPlanModal(true)} className="mt-4"><Plus className="h-4 w-4" /> باقة جديدة</Btn>
+          <Btn onClick={() => {setEditPlan(null);setPlanForm({name:"",priceMonthly:"0",maxUsers:"3",maxProducts:"100",maxBranches:"1",features:"",isActive:true});setPlanModal(true);}} className="mt-4"><Plus className="h-4 w-4" /> باقة جديدة</Btn>
         </div>
       )}
 
@@ -218,12 +255,12 @@ export default function AdminPage() {
             <Field label="الباقة">
               <Select value={form.planId} onChange={(e) => setForm({ ...form, planId: e.target.value })}>
                 <option value="">الأرخص (افتراضي)</option>
-                {plans.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                {plans.filter(p=>p.isActive).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
               </Select>
             </Field>
           </div>
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.isDemo} onChange={(e) => setForm({ ...form, isDemo: e.target.checked })} className="h-4 w-4 accent-leaf-700" /> بيئة تجريبية (بيانات توضيحية)</label>
-          <Btn type="submit" className="w-full">إنشاء المتجر وحساب المالك</Btn>
+          <Btn disabled={busy} type="submit" className="w-full">إنشاء المتجر وحساب المالك</Btn>
         </form>
       </Modal>
 
@@ -248,18 +285,20 @@ export default function AdminPage() {
           <Field label="تغيير الباقة">
             <Select value={managePlan} onChange={(e) => setManagePlan(e.target.value)}>
               <option value="">بدون تغيير</option>
-              {plans.map((p) => <option key={p.id} value={p.id}>{p.name} — {fmtMoney(p.priceMonthly)}/شهر</option>)}
+              {plans.filter(p=>p.isActive).map((p) => <option key={p.id} value={p.id}>{p.name} — {fmtMoney(p.priceMonthly)}/شهر</option>)}
             </Select>
           </Field>
           <Field label="تمديد الاشتراك (أيام من اليوم/من الانتهاء)">
             <Input type="number" min="0" value={extendDays} onChange={(e) => setExtendDays(e.target.value)} className="ltr-nums" />
           </Field>
-          <Btn onClick={applyManage} className="w-full">حفظ التعديلات</Btn>
+          <Field label="حالة الاشتراك"><Select value={subscriptionStatus} onChange={e=>setSubscriptionStatus(e.target.value)}><option value="">بدون تغيير</option>{['trial','active','past_due','cancelled','expired'].map(v=><option key={v}>{v}</option>)}</Select></Field>
+          <Field label="تاريخ الانتهاء المحدد (بديل التمديد)"><Input type="date" value={exactEnd} onChange={e=>setExactEnd(e.target.value)} /></Field>
+          <Btn disabled={busy} onClick={applyManage} className="w-full">حفظ التعديلات</Btn>
         </div>
       </Modal>
 
       {/* New plan */}
-      <Modal open={planModal} onClose={() => setPlanModal(false)} title="باقة جديدة">
+      <Modal open={planModal} onClose={() => setPlanModal(false)} title={editPlan?"تعديل الباقة":"باقة جديدة"}>
         <form onSubmit={savePlan} className="space-y-4">
           <Field label="اسم الباقة" required><Input value={planForm.name} onChange={(e) => setPlanForm({ ...planForm, name: e.target.value })} required /></Field>
           <div className="grid grid-cols-2 gap-3">
@@ -268,7 +307,9 @@ export default function AdminPage() {
             <Field label="حد الأصناف"><Input type="number" min="1" value={planForm.maxProducts} onChange={(e) => setPlanForm({ ...planForm, maxProducts: e.target.value })} className="ltr-nums" /></Field>
             <Field label="حد الفروع"><Input type="number" min="1" value={planForm.maxBranches} onChange={(e) => setPlanForm({ ...planForm, maxBranches: e.target.value })} className="ltr-nums" /></Field>
           </div>
-          <Btn type="submit" className="w-full">إضافة الباقة</Btn>
+          <Field label="المزايا — كل ميزة في سطر"><textarea className="w-full rounded border p-2" value={planForm.features} onChange={e=>setPlanForm({...planForm,features:e.target.value})} /></Field>
+          <label><input type="checkbox" checked={planForm.isActive} onChange={e=>setPlanForm({...planForm,isActive:e.target.checked})} /> متاحة للاشتراكات الجديدة</label>
+          <Btn disabled={busy} type="submit" className="w-full">حفظ الباقة</Btn>
         </form>
       </Modal>
     </div>

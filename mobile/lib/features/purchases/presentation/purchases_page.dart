@@ -10,6 +10,7 @@ class PurchasesPage extends StatefulWidget {
 
 class _PurchasesPageState extends State<PurchasesPage> {
   String? _supplierId;
+  int _savedCount=0;
   final List<Map<String, String>> _lines = [{'productId': '', 'qty': '1', 'unitCost': ''}];
   final _paid = TextEditingController(text: '0');
   final _notes = TextEditingController();
@@ -18,7 +19,7 @@ class _PurchasesPageState extends State<PurchasesPage> {
 
   @override Widget build(BuildContext context) {
     return BlocConsumer<PurchasesBloc, PurchasesState>(
-      listener: (context, s) { if (s.message != null) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(s.message!))); },
+      listener: (context, s) { if(s.savedCount!=_savedCount){setState((){_savedCount=s.savedCount;_lines..clear()..add({'productId':'','qty':'1','unitCost':''});_paid.text='0';_notes.clear();});} if (s.message != null) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(s.message!))); },
       builder: (context, state) {
         if (state.status == PurchasesStatus.loading) return const Center(child: CircularProgressIndicator());
         if (state.status == PurchasesStatus.failure) return Center(child: Text(state.message ?? 'خطأ'));
@@ -57,8 +58,8 @@ class _PurchasesPageState extends State<PurchasesPage> {
                     if (_supplierId == null) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('اختر المورّد'))); return; }
                     final valid = _lines.where((l) => l['productId']!.isNotEmpty && (num.tryParse(l['qty']!) ?? 0) > 0).toList();
                     if (valid.isEmpty) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('أضف صنفاً واحداً على الأقل'))); return; }
-                    context.read<PurchasesBloc>().add(PurchaseQueued(supplierId: _supplierId!, items: valid, paidAmount: _paid.text, notes: _notes.text.isEmpty ? null : _notes.text));
-                    setState(() { _lines..clear()..add({'productId': '', 'qty': '1', 'unitCost': ''}); _paid.text = '0'; _notes.clear(); });
+                    context.read<PurchasesBloc>().add(PurchaseQueued(supplierId: _supplierId!, items: valid.map((l)=>Map<String,dynamic>.from(l)).toList(), paidAmount: _paid.text, notes: _notes.text.isEmpty ? null : _notes.text));
+
                   }, child: const Text('حفظ فاتورة الشراء (حتى دون اتصال)'))),
                   const SizedBox(height: 4),
                   const Text('حتى دون اتصال تُحفظ الفاتورة بمعرّف ثابت وتُزامَن تلقائياً — تمنع التكرار.', style: TextStyle(fontSize: 11, color: Colors.grey)),

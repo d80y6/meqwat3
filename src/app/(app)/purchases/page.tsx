@@ -2,7 +2,7 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { Plus, Trash2, ChevronDown, ChevronLeft, WifiOff, CloudUpload, RefreshCw, Undo2 } from "lucide-react";
-import { apiGet, apiPost, ClientError, newMutationId } from "@/lib/client";
+import { apiCollection, apiPost, ClientError, newMutationId } from "@/lib/client";
 import { enqueue, removeOp, getQueue, subscribeQueue, syncQueue, isOnline, type QueuedOp } from "@/lib/offline";
 import { draftCents, draftLineTotal } from "@/lib/money-draft";
 import { fmtMoney, fmtQty, toCents, fromCents } from "@/lib/money";
@@ -42,9 +42,9 @@ export default function PurchasesPage() {
     setLoading(true);
     try {
       const [p, pr, s] = await Promise.all([
-        apiGet<{ items: Purchase[] }>("/api/purchases?limit=50"),
-        apiGet<{ items: Product[] }>("/api/products?active=1&limit=200"),
-        apiGet<{ items: Supplier[] }>("/api/suppliers?limit=200"),
+        apiCollection<Purchase>("/api/purchases?limit=50"),
+        apiCollection<Product>("/api/products?active=1&limit=200"),
+        apiCollection<Supplier>("/api/suppliers?limit=200"),
       ]);
       setItems(p.items);
       setProducts(pr.items);

@@ -12,6 +12,7 @@ test.describe("Independent audit: real HTTP and real PostgreSQL", () => {
   let a: APIRequestContext, b: APIRequestContext, cashier: APIRequestContext, admin: APIRequestContext;
   let adminId:string;
   const requestIds:string[]=[];
+  const planIds:string[]=[];
   let ownerId:string, cashierId:string, productA:string, productB:string, customerA:string, supplierA:string;
   const password="Audit-test-only-1234";
   const login=async(email:string) => {
@@ -39,6 +40,7 @@ test.describe("Independent audit: real HTTP and real PostgreSQL", () => {
     for(const c of [a,b,cashier,admin]) if(c) await c.dispose();
     // Delete only fixtures created by this suite, in dependency order.
     for(const id of requestIds) await db.query('delete from subscription_requests where id=$1',[id]);
+    for(const t of tenants){await db.query('delete from platform_receipts where invoice_id in (select id from platform_invoices where tenant_id=$1)',[t]);await db.query('delete from platform_invoices where tenant_id=$1',[t]);}
     if(adminId) {await db.query('delete from audit_logs where user_id=$1',[adminId]);await db.query('delete from users where id=$1',[adminId]);}
     for(const t of tenants) {
       for(const table of ['sale_items','purchase_items','inventory_movements','financial_transactions','payments','sales','purchases','shifts','processed_mutations','tenant_counters','subscriptions','audit_logs','products','customers','suppliers','cash_registers','users']) {
@@ -46,6 +48,7 @@ test.describe("Independent audit: real HTTP and real PostgreSQL", () => {
       }
       await db.query('delete from tenants where id=$1',[t]);
     }
+    for(const id of planIds)await db.query('delete from plans where id=$1',[id]);
     await db.end();
   });
 
@@ -158,6 +161,94 @@ test.describe("Independent audit: real HTTP and real PostgreSQL", () => {
       if(path==='/cash') await expect(page.getByText(/إجمالي المصروفات المعروضة/)).toContainText('-0.30');
     }
     expect(errors).toEqual([]);
+  });
+
+  test('admin plan validation, edit and actor/payload bound replay',async()=>{
+    expect((await b.post('/api/admin/plans',{data:{name:'forbidden'}})).status()).toBe(403);
+    expect((await admin.post('/api/admin/plans',{data:{name:'bad',priceMonthly:'-1',clientMutationId:randomUUID()}})).status()).toBe(400);
+    const key=randomUUID(),body={name:`audit-plan-${stamp}`,priceMonthly:'0.30',maxUsers:5,maxProducts:200,maxBranches:1,clientMutationId:key};
+    const responses=await Promise.all([admin.post('/api/admin/plans',{data:body}),admin.post('/api/admin/plans',{data:body})]);
+    expect(responses.every(r=>r.status()===201)).toBe(true);
+    const p=(await responses[0].json()).data;planIds.push(p.id);
+    expect((await responses[1].json()).data.id).toBe(p.id);
+    expect((await admin.post('/api/admin/plans',{data:{...body,name:'changed'}})).status()).toBe(409);
+    const updated=await admin.patch('/api/admin/plans',{data:{id:p.id,clientMutationId:randomUUID(),features:['tested'],isActive:false}});
+    expect(updated.status()).toBe(200);expect((await updated.json()).data.isActive).toBe(false);
+  });
+  test('latest tenant subscription and concurrent idempotent renewal',async()=>{
+    const oldPlan=(await db.query('select id from plans where is_active=true limit 1')).rows[0].id;
+    await db.query("insert into subscriptions(tenant_id,plan_id,status,created_at,ends_at) values($1,$2,'expired','2020-01-01','2020-02-01')",[tenants[1],oldPlan]);
+    const base=new Date(Date.now()+86400000);
+    const current=(await db.query("insert into subscriptions(tenant_id,plan_id,status,ends_at) values($1,$2,'active',$3) returning id",[tenants[1],oldPlan,base])).rows[0].id;
+    const listing=await admin.get(`/api/admin/tenants?search=audit&limit=200`);expect(listing.status()).toBe(200);
+    expect((await listing.json()).data.items.find((r:{tenant:{id:string}})=>r.tenant.id===tenants[1]).subStatus).toBe('active');
+    const data={clientMutationId:randomUUID(),extendDays:30};
+    const results=await Promise.all(Array.from({length:5},()=>admin.patch(`/api/admin/tenants/${tenants[1]}`,{data})));
+    expect(results.map(r=>r.status())).toEqual([200,200,200,200,200]);
+    const end=(await db.query('select ends_at from subscriptions where id=$1',[current])).rows[0].ends_at;
+    expect(end.getTime()).toBe(base.getTime()+30*86400000);
+    expect((await admin.patch(`/api/admin/tenants/${tenants[1]}`,{data:{...data,extendDays:31}})).status()).toBe(409);
+    expect((await admin.get(`/api/admin/tenants/${tenants[1]}`)).status()).toBe(200);
+    expect((await b.get(`/api/admin/tenants/${tenants[1]}`)).status()).toBe(403);
+    expect((await admin.get('/api/admin/audit?search=admin.tenant.update')).status()).toBe(200);
+  });
+  test('admin audit failure rolls back subscription status and replay key',async()=>{
+    const key=randomUUID();
+    await db.query(`create function audit_admin_fail() returns trigger language plpgsql as $$ begin if NEW.action='admin.tenant.update' and NEW.user_id='${adminId}' then raise exception 'test rollback'; end if; return NEW; end $$; create trigger audit_admin_fail before insert on audit_logs for each row execute function audit_admin_fail()`);
+    try {
+      expect((await admin.patch(`/api/admin/tenants/${tenants[1]}`,{data:{status:'suspended',clientMutationId:key}})).status()).toBe(500);
+      expect((await db.query('select status from tenants where id=$1',[tenants[1]])).rows[0].status).toBe('active');
+      expect((await db.query('select 1 from admin_mutations where mutation_id=$1',[key])).rowCount).toBe(0);
+    } finally {await db.query('drop trigger audit_admin_fail on audit_logs;drop function audit_admin_fail()');}
+  });
+  test('admin plan editor and tenant detail are wired to real data',async({page})=>{
+    await page.context().addCookies((await admin.storageState()).cookies);
+    await page.goto('/admin');await expect(page.getByRole('heading',{name:'إدارة المنصة'})).toBeVisible();
+    await page.getByRole('tab',{name:'الباقات',exact:true}).click();
+    await page.getByRole('button',{name:'تعديل',exact:true}).first().click();
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await page.goto(`/admin/tenants/${tenants[1]}`);
+    await expect(page.getByRole('heading',{name:'المستخدمون والجلسات'})).toBeVisible();
+    await expect(page.getByRole('button',{name:'إلغاء الجلسات'})).toBeVisible();
+  });
+
+  test('platform invoices, collection replay and refund bounds reconcile independently',async()=>{
+    const path=`/api/admin/tenants/${tenants[1]}/billing`;
+    expect((await b.get(path)).status()).toBe(403);
+    const invoice=await admin.post(path,{data:{clientMutationId:randomUUID(),action:'invoice',description:'audit subscription',amount:'10.30',dueAt:'2026-12-01'}});
+    expect(invoice.status()).toBe(201);const id=(await invoice.json()).data.id;
+    const payload={clientMutationId:randomUUID(),action:'payment',invoiceId:id,amount:'8.20',reference:'isolated receipt'};
+    const responses=await Promise.all(Array.from({length:4},()=>admin.post(path,{data:payload})));
+    expect(responses.every(r=>r.status()===201)).toBe(true);
+    expect((await db.query('select count(*)::int n from platform_receipts where invoice_id=$1',[id])).rows[0].n).toBe(1);
+    expect((await admin.post(path,{data:{...payload,clientMutationId:randomUUID(),amount:'2.11'}})).status()).toBe(409);
+    expect((await admin.post(path,{data:{...payload,clientMutationId:randomUUID(),action:'refund',amount:'8.21'}})).status()).toBe(409);
+    expect((await admin.post(path,{data:{...payload,clientMutationId:randomUUID(),action:'refund',amount:'0.20',reference:'correction'}})).status()).toBe(201);
+    const rows=(await (await admin.get(path)).json()).data.items;
+    expect(rows.find((r:{id:string})=>r.id===id).received).toBe('8.00');
+    expect((await db.query("select sum(case when kind='payment' then amount else -amount end)::text n from platform_receipts where invoice_id=$1",[id])).rows[0].n).toBe('8.00');
+  });
+
+  test('concurrent user creation and reactivation cannot exceed entitlement',async()=>{
+    const plan=(await db.query("insert into plans(name,max_users,max_products,max_branches) values('audit limits',2,1000,1) returning id")).rows[0].id;planIds.push(plan);
+    await db.query('update subscriptions set plan_id=$1 where tenant_id=$2',[plan,tenants[1]]);
+    const replies=await Promise.all(Array.from({length:3},(_,i)=>b.post('/api/users',{data:{name:'extra',email:`extra-${i}-${stamp}@test.ye`,password:'Extra-test-1234',role:'cashier'}})));
+    expect(replies.filter(r=>r.status()===201)).toHaveLength(1);
+    expect(replies.filter(r=>r.status()===400)).toHaveLength(2);
+    const extra=(await replies.find(r=>r.status()===201)!.json()).data.id;
+    const inactive=(await db.query("insert into users(tenant_id,name,email,password_hash,role,is_active) values($1,'inactive',$2,$3,'cashier',false) returning id",[tenants[1],`inactive-${stamp}@test.ye`,await bcrypt.hash(password,12)])).rows[0].id;
+    expect((await b.patch(`/api/users/${inactive}`,{data:{isActive:true}})).status()).toBe(409);
+    expect((await b.patch(`/api/users/${extra}`,{data:{isActive:false}})).status()).toBe(200);
+    expect((await b.patch(`/api/users/${inactive}`,{data:{isActive:true}})).status()).toBe(200);
+    expect((await db.query('select count(*)::int n from users where tenant_id=$1 and is_active',[tenants[1]])).rows[0].n).toBe(2);
+    const owner=(await db.query("select id from users where tenant_id=$1 and role='tenant_owner'",[tenants[1]])).rows[0].id;
+    expect((await admin.post(`/api/admin/tenants/${tenants[1]}/users`,{data:{clientMutationId:randomUUID(),userId:owner,action:'disable'}})).status()).toBe(409);
+  });
+  test('web selectors exhaust pages beyond 200 products',async({page})=>{
+    await db.query("insert into products(tenant_id,name,stock_qty,sale_price,cost_price) select $1,'catalog-'||n,1,1,1 from generate_series(1,205) n",[tenants[1]]);
+    await page.context().addCookies((await b.storageState()).cookies);
+    await page.goto('/pos');
+    await expect(page.locator('button',{hasText:'catalog-'})).toHaveCount(205);
   });
 
 });

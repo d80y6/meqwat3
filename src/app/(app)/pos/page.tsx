@@ -5,7 +5,7 @@ import {
   Search, Plus, Minus, Trash2, User, Banknote, WifiOff, CloudUpload, RefreshCw,
   CheckCircle2, AlertTriangle, ShoppingCart, Landmark, XCircle,
 } from "lucide-react";
-import { apiGet, apiPost, ClientError, newMutationId } from "@/lib/client";
+import { apiCollection, apiGet, apiPost, ClientError, newMutationId } from "@/lib/client";
 import { enqueue, getQueue, removeOp, subscribeQueue, syncQueue, isOnline, type QueuedOp } from "@/lib/offline";
 import { draftCents, draftLineTotal } from "@/lib/money-draft";
 import { fmtMoney, toCents, fromCents } from "@/lib/money";
@@ -43,8 +43,8 @@ export default function PosPage() {
   const load = useCallback(async () => {
     try {
       const [p, c, r] = await Promise.all([
-        apiGet<{ items: Product[] }>("/api/products?active=1&limit=200"),
-        apiGet<{ items: Customer[] }>("/api/customers?limit=200"),
+        apiCollection<Product>("/api/products?active=1&limit=200"),
+        apiCollection<Customer>("/api/customers?limit=200"),
         apiGet<{ registers: Register[]; openShifts: Shift[] }>("/api/registers"),
       ]);
       setProducts(p.items);

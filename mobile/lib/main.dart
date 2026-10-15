@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -8,6 +9,12 @@ import 'core/sync/sync_repository.dart';
 import 'features/auth/bloc/auth_bloc.dart';
 import 'features/auth/data/auth_repository.dart';
 import 'features/auth/presentation/login_page.dart';
+import 'features/sync/presentation/outbox_page.dart';
+import 'features/manage/presentation/records_page.dart';
+import 'features/manage/presentation/documents_page.dart';
+import 'features/manage/presentation/cash_page.dart';
+import 'features/manage/presentation/reports_page.dart';
+import 'features/manage/presentation/subscription_page.dart';
 import 'features/debts/bloc/debts_bloc.dart';
 import 'features/debts/data/debts_repository.dart';
 import 'features/debts/presentation/debts_page.dart';
@@ -34,6 +41,7 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final db = await AppDatabase.open();
   final api = ApiClient(
+    store: db,
     baseUrl: const String.fromEnvironment(
       'MEQWAT_API',
       defaultValue: 'https://app.meqwat.example',
@@ -125,9 +133,9 @@ class AuthGate extends StatelessWidget {
         if (state is AuthAuthenticated) return MultiBlocProvider(
           providers: [
             BlocProvider(create: (_) => PosBloc(repository: context.read<PosRepository>(), sync: context.read<SyncRepository>())..add(const PosStarted())),
-            BlocProvider(create: (_) => PurchasesBloc(repository: context.read<PurchasesRepository>(), sync: context.read<SyncRepository>())..add(const PurchasesStarted())),
-            BlocProvider(create: (_) => InventoryBloc(repository: context.read<InventoryRepository>())..add(const InventoryStarted())),
-            BlocProvider(create: (_) => DebtsBloc(repository: context.read<DebtsRepository>(), sync: context.read<SyncRepository>())..add(const DebtsStarted())),
+            if(state.role!='cashier')BlocProvider(create: (_) => PurchasesBloc(repository: context.read<PurchasesRepository>(), sync: context.read<SyncRepository>())..add(const PurchasesStarted())),
+            if(state.role!='cashier')BlocProvider(create: (_) => InventoryBloc(repository: context.read<InventoryRepository>())..add(const InventoryStarted())),
+            if(state.role!='cashier')BlocProvider(create: (_) => DebtsBloc(repository: context.read<DebtsRepository>(), sync: context.read<SyncRepository>())..add(const DebtsStarted())),
           ], child: const HomeShell());
         if (state is AuthLoading || state is AuthInitial) {
           return const Scaffold(body: Center(child: CircularProgressIndicator()));
@@ -151,10 +159,19 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> {
   int _index = 0;
+  Timer? _timer;
+  @override
+  void initState(){super.initState();_timer=Timer.periodic(const Duration(seconds:30),(_){if(mounted)context.read<SyncRepository>().syncNow().catchError((Object _) => const SyncOutcome());});}
+  @override
+  void dispose(){_timer?.cancel();super.dispose();}
 
   @override
   Widget build(BuildContext context) {
-    final pages = const [PosPage(), PurchasesPage(), InventoryPage(), DebtsPage()];
+    final auth=context.watch<AuthBloc>().state;
+    final role=auth is AuthAuthenticated?auth.role:'cashier';
+    final manager=role=='tenant_owner'||role=='manager';
+    final pages = <Widget>[const PosPage(),if(manager)const PurchasesPage(),if(manager)const InventoryPage(),if(manager)const DebtsPage()];
+    if(_index>=pages.length)_index=0;
     return Scaffold(
       drawer: Drawer(
         child: SafeArea(
@@ -191,29 +208,43 @@ class _HomeShellState extends State<HomeShell> {
                   context.read<AuthBloc>().add(const AuthLogoutRequested());
                 },
               ),
+              ListTile(title:const Text('سجل المبيعات والإيصالات'),onTap:()=>Navigator.push(context,MaterialPageRoute<void>(builder:(_)=>DocumentsPage(canReturn:manager)))),
+              ListTile(title:const Text('الصناديق والورديات والمصروفات'),onTap:()=>Navigator.push(context,MaterialPageRoute<void>(builder:(_)=>const CashPage()))),
+              ListTile(title:const Text('العملاء'),onTap:()=>Navigator.push(context,MaterialPageRoute<void>(builder:(_)=>const RecordsPage(resource:'customers',title:'العملاء')))),
+              if(manager)...[
+                ListTile(title:const Text('الأصناف'),onTap:()=>Navigator.push(context,MaterialPageRoute<void>(builder:(_)=>const RecordsPage(resource:'products',title:'الأصناف')))),
+                ListTile(title:const Text('المورّدون'),onTap:()=>Navigator.push(context,MaterialPageRoute<void>(builder:(_)=>const RecordsPage(resource:'suppliers',title:'المورّدون')))),
+                ListTile(title:const Text('مرتجعات المشتريات'),onTap:()=>Navigator.push(context,MaterialPageRoute<void>(builder:(_)=>const DocumentsPage(purchase:true,canReturn:true)))),
+                ListTile(title:const Text('التقارير'),onTap:()=>Navigator.push(context,MaterialPageRoute<void>(builder:(_)=>const ReportsPage()))),
+              ],
+              if(role=='tenant_owner')...[
+                ListTile(title:const Text('المستخدمون'),onTap:()=>Navigator.push(context,MaterialPageRoute<void>(builder:(_)=>const RecordsPage(resource:'users',title:'المستخدمون')))),
+                ListTile(title:const Text('الاشتراك'),onTap:()=>Navigator.push(context,MaterialPageRoute<void>(builder:(_)=>const SubscriptionPage()))),
+              ],
+              ListTile(leading:const Icon(Icons.sync_problem),title:const Text('العمليات المحلية والتعارضات'),onTap:()=>Navigator.push(context,MaterialPageRoute<void>(builder:(_)=>const OutboxPage()))),
               const Divider(),
               Padding(
                 padding: const EdgeInsets.all(12),
-                child: Text('مقوات v1.0.0 — عمل دون اتصال آمن', style: TextStyle(color: Colors.grey.shade600, fontSize: 12)),
+                child: Text('مقوات — العمليات المحلية تنتظر تأكيد الخادم', style: TextStyle(color: Colors.grey.shade600, fontSize: 12)),
               ),
             ],
           ),
         ),
       ),
       body: IndexedStack(index: _index, children: pages),
-      bottomNavigationBar: NavigationBar(
+      bottomNavigationBar: !manager ? null : NavigationBar(
         selectedIndex: _index,
         onDestinationSelected: (i) {
           setState(() => _index = i);
-          if (i == 2) context.read<InventoryBloc>().add(const InventoryRefreshRequested());
-          if (i == 3) context.read<DebtsBloc>().add(const DebtsRefreshRequested());
-          if (i == 1) context.read<PurchasesBloc>().add(const PurchasesStarted());
+          if (manager && i == 2) context.read<InventoryBloc>().add(const InventoryRefreshRequested());
+          if (manager && i == 3) context.read<DebtsBloc>().add(const DebtsRefreshRequested());
+          if (manager && i == 1) context.read<PurchasesBloc>().add(const PurchasesStarted());
         },
-        destinations: const [
-          NavigationDestination(icon: Icon(Icons.shopping_cart), label: 'البيع'),
-          NavigationDestination(icon: Icon(Icons.shopping_cart_checkout), label: 'المشتريات'),
-          NavigationDestination(icon: Icon(Icons.inventory_2), label: 'المخزون'),
-          NavigationDestination(icon: Icon(Icons.account_balance_wallet), label: 'الديون'),
+        destinations: [
+          const NavigationDestination(icon: Icon(Icons.shopping_cart), label: 'البيع'),
+          if(manager)const NavigationDestination(icon: Icon(Icons.shopping_cart_checkout), label: 'المشتريات'),
+          if(manager)const NavigationDestination(icon: Icon(Icons.inventory_2), label: 'المخزون'),
+          if(manager)const NavigationDestination(icon: Icon(Icons.account_balance_wallet), label: 'الديون'),
         ],
       ),
     );

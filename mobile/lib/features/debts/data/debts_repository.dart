@@ -15,11 +15,11 @@ class DebtsRepository {
   final _uuid = const Uuid();
 
   Future<({List<Map<String, dynamic>> customers, List<Map<String, dynamic>> suppliers})> fetchDebtors() async {
-    final c = await api.get('/api/customers?debt=1&limit=200');
-    final s = await api.get('/api/suppliers?debt=1&limit=200');
+    final c = await api.collection('/api/customers?debt=1');
+    final s = await api.collection('/api/suppliers?debt=1');
     return (
-      customers: (c['items'] as List).cast<Map<String, dynamic>>(),
-      suppliers: (s['items'] as List).cast<Map<String, dynamic>>(),
+      customers: c,
+      suppliers: s,
     );
   }
 

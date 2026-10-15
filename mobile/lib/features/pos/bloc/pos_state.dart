@@ -11,6 +11,7 @@ class PosState extends Equatable {
     this.conflicts = const [],
     this.message,
     this.lastInvoiceNo,
+    this.queuedId,
   });
 
   final PosStatus status;
@@ -25,6 +26,7 @@ class PosState extends Equatable {
 
   final String? message;
   final int? lastInvoiceNo;
+  final String? queuedId;
 
   PosState copyWith({
     PosStatus? status,
@@ -34,6 +36,7 @@ class PosState extends Equatable {
     List<Map<String, Object?>>? conflicts,
     String? message,
     int? lastInvoiceNo,
+    String? queuedId,
     bool clearMessage = false,
   }) {
     return PosState(
@@ -44,9 +47,10 @@ class PosState extends Equatable {
       conflicts: conflicts ?? this.conflicts,
       message: clearMessage ? null : (message ?? this.message),
       lastInvoiceNo: lastInvoiceNo ?? this.lastInvoiceNo,
+      queuedId: queuedId ?? this.queuedId,
     );
   }
 
   @override
-  List<Object?> get props => [status, products, customers, pendingCount, conflicts, message, lastInvoiceNo];
+  List<Object?> get props => [status, products, customers, pendingCount, conflicts, message, lastInvoiceNo, queuedId];
 }

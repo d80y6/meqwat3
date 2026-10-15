@@ -1,7 +1,7 @@
 import { db } from "@/db";
-import { subscriptionRequests, plans } from "@/db/schema";
-import { eq, desc, and } from "drizzle-orm";
-import { ok, handler, requireUser, requireRole, audit, ApiError } from "@/lib/api";
+import { subscriptionRequests, plans, auditLogs } from "@/db/schema";
+import { eq, desc, and, count, ilike, or } from "drizzle-orm";
+import { ok, handler, requireUser, requireRole, ApiError, parsePagination, escapeIlike } from "@/lib/api";
 import { approveRequest } from "@/lib/provision";
 
 export const dynamic = "force-dynamic";
@@ -11,15 +11,18 @@ export const GET = handler(async (req: Request) => {
   requireRole(user, "admin:subscriptions");
   const url = new URL(req.url);
   const status = url.searchParams.get("status");
-  const conds = status ? eq(subscriptionRequests.status, status as "pending") : undefined;
+  const {limit,offset,search}=parsePagination(req);
+  if(status&&!['pending','approved','rejected'].includes(status))throw new ApiError('حالة غير صالحة');
+  const conds=and(status?eq(subscriptionRequests.status,status as 'pending'):undefined,search?or(ilike(subscriptionRequests.businessName,`%${escapeIlike(search)}%`),ilike(subscriptionRequests.email,`%${escapeIlike(search)}%`)):undefined);
   const rows = await db
     .select({ request: subscriptionRequests, planName: plans.name })
     .from(subscriptionRequests)
     .leftJoin(plans, eq(subscriptionRequests.planId, plans.id))
     .where(conds)
     .orderBy(desc(subscriptionRequests.createdAt))
-    .limit(100);
-  return ok({ items: rows.map((r) => ({ ...r.request, planName: r.planName })) });
+    .limit(limit).offset(offset);
+  const [total]=await db.select({n:count()}).from(subscriptionRequests).where(conds);
+  return ok({ items: rows.map((r) => ({ ...r.request, planName: r.planName })),total:total.n });
 });
 
 export const POST = handler(async (req: Request) => {
@@ -33,18 +36,21 @@ export const POST = handler(async (req: Request) => {
   if (request.status !== "pending") throw new ApiError("تمت مراجعة هذا الطلب مسبقاً");
 
   if (action === "reject") {
-    const [updated] = await db
+    const updated = await db.transaction(async tx=>{
+    const [updated] = await tx
       .update(subscriptionRequests)
       .set({ status: "rejected", reviewedBy: user.id, reviewedAt: new Date(), notes: body?.notes ?? request.notes })
       .where(and(eq(subscriptionRequests.id, requestId), eq(subscriptionRequests.status, "pending")))
       .returning();
     if (!updated) throw new ApiError("تمت مراجعة هذا الطلب مسبقاً", 409);
-    await audit(user, "admin.request.reject", "subscription_request", requestId);
+    await tx.insert(auditLogs).values({userId:user.id,tenantId:request.tenantId,action:"admin.request.reject",entityType:"subscription_request",entityId:requestId,metadata:{notes:body?.notes??null}});
+    return updated;
+    });
     return ok(updated);
   }
   if (action === "approve") {
     const result = await approveRequest(requestId, user.id);
-    await audit(user, "admin.request.approve", "subscription_request", requestId, { tenantId: result.tenant.id });
+
     // Deliver one-time credentials by email when SMTP is configured;
     // otherwise they are returned once for manual hand-over by the admin.
     let emailed = false;
@@ -83,6 +89,7 @@ export const POST = handler(async (req: Request) => {
       emailed = r.sent;
       mailVia = r.via;
     }
+    await db.insert(auditLogs).values({tenantId:result.tenant.id,userId:user.id,action:'admin.request.delivery',entityType:'subscription_request',entityId:requestId,metadata:{sent:emailed,via:mailVia??null}});
     return ok({ ...result, emailed, mailVia });
   }
   throw new ApiError("إجراء غير صالح");

@@ -1,7 +1,7 @@
 import { randomBytes } from "crypto";
 import { authDb as db } from "@/db";
-import { tenants, subscriptions, plans, users, cashRegisters, subscriptionRequests } from "@/db/schema";
-import { desc, eq } from "drizzle-orm";
+import { tenants, subscriptions, plans, users, cashRegisters, subscriptionRequests, auditLogs, products } from "@/db/schema";
+import { desc, eq, sql, and, count } from "drizzle-orm";
 import { hashPassword } from "./auth";
 import { ApiError } from "./api";
 import type { Tx } from "./tx";
@@ -42,7 +42,7 @@ export async function provisionTenant(input: ProvisionInput, connection: typeof 
   let plan = null as typeof plans.$inferSelect | null;
   if (input.planId) {
     const [p] = await connection.select().from(plans).where(eq(plans.id, input.planId)).limit(1);
-    if (!p) throw new ApiError("الباقة غير موجودة");
+    if (!p?.isActive) throw new ApiError("الباقة غير موجودة أو غير مفعّلة");
     plan = p;
   } else {
     const [p] = await connection.select().from(plans).where(eq(plans.isActive, true)).orderBy(plans.priceMonthly).limit(1);
@@ -120,6 +120,7 @@ export async function approveRequest(requestId: string, reviewerId: string): Pro
   if (request.status !== "pending") throw new ApiError("تمت مراجعة هذا الطلب مسبقاً");
 
   if (request.tenantId) {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${request.tenantId},0))`);
     const [tenant] = await tx.select().from(tenants).where(eq(tenants.id, request.tenantId)).limit(1);
     if (!tenant) throw new ApiError("المتجر المرتبط بالطلب غير موجود", 404);
     const [latest] = await tx
@@ -133,7 +134,10 @@ export async function approveRequest(requestId: string, reviewerId: string): Pro
     let planName = "";
     if (request.planId) {
       const [plan] = await tx.select().from(plans).where(eq(plans.id, request.planId)).limit(1);
-      if (!plan) throw new ApiError("الباقة المطلوبة غير موجودة");
+      if (!plan?.isActive) throw new ApiError("الباقة المطلوبة غير موجودة أو غير مفعّلة");
+      const [members]=await tx.select({n:count()}).from(users).where(and(eq(users.tenantId,tenant.id),eq(users.isActive,true)));
+      const [catalog]=await tx.select({n:count()}).from(products).where(eq(products.tenantId,tenant.id));
+      if(members.n>plan.maxUsers||catalog.n>plan.maxProducts)throw new ApiError('الاستخدام الحالي يتجاوز حدود الباقة المطلوبة',409);
       planName = plan.name;
     }
     const base = latest.endsAt && latest.endsAt > new Date() ? latest.endsAt : new Date();
@@ -155,6 +159,7 @@ export async function approveRequest(requestId: string, reviewerId: string): Pro
       const [plan] = await tx.select().from(plans).where(eq(plans.id, latest.planId)).limit(1);
       planName = plan?.name ?? "";
     }
+    await tx.insert(auditLogs).values({userId:reviewerId,tenantId:tenant.id,action:"admin.request.approve",entityType:"subscription_request",entityId:requestId});
     const trialEndsAt = new Date(base.getTime() + 30 * 86400_000);
     return { tenant, ownerEmail: request.email, ownerName: request.ownerName, tempPassword: null, upgraded: true, planName, trialEndsAt };
   }
@@ -173,6 +178,7 @@ export async function approveRequest(requestId: string, reviewerId: string): Pro
       .set({ status: "approved", tenantId: result.tenant.id, reviewedBy: reviewerId, reviewedAt: new Date() })
       .where(eq(subscriptionRequests.id, requestId));
   });
+  await tx.insert(auditLogs).values({userId:reviewerId,tenantId:result.tenant.id,action:"admin.request.approve",entityType:"subscription_request",entityId:requestId});
   return {
     tenant: result.tenant,
     ownerEmail: result.owner.email,

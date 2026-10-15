@@ -54,16 +54,16 @@ function canonicalRequest(value: unknown): string {
     .sort(([a],[b])=>a.localeCompare(b)).map(([k,v])=>`${JSON.stringify(k)}:${canonicalRequest(v)}`).join(",")}}`;
   return JSON.stringify(value);
 }
-export const apiPost = async <T = unknown>(path: string, body?: unknown): Promise<T> => {
+const mutate = async <T = unknown>(path: string, body?: unknown, method = "POST"): Promise<T> => {
   const payload = (body && typeof body === "object" ? body : {}) as Record<string, unknown>;
-  const send = (clientMutationId: string) => api<T>(path, { method: "POST", body: JSON.stringify({ ...payload, clientMutationId }) });
+  const send = (clientMutationId: string) => api<T>(path, { method, body: JSON.stringify({ ...payload, clientMutationId }) });
   // POS/purchases already persist their own outbox ID before calling transport.
   if (typeof payload.clientMutationId === "string") return send(payload.clientMutationId);
-  const financial = /^\/api\/(payments|expenses|inventory)$/.test(path) || /^\/api\/(sales|purchases)\/[^/]+\/return$/.test(path);
+  const financial = path.startsWith("/api/admin/") || /^\/api\/(payments|expenses|inventory)$/.test(path) || /^\/api\/(sales|purchases)\/[^/]+\/return$/.test(path);
   if (!financial || typeof window === "undefined") return send(newMutationId());
   const { user } = await apiGet<{user:{id:string;tenantId:string}}>("/api/auth/me");
   if (!crypto.subtle) throw new ClientError("يلزم اتصال آمن لحفظ العملية", 400);
-  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonicalRequest({path,payload})));
+  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonicalRequest({path,payload,method})));
   const fingerprint = [...new Uint8Array(hash)].map(b=>b.toString(16).padStart(2,"0")).join("");
   const key = `meqwat_pending_v1:${user.tenantId}:${user.id}:${fingerprint}`;
   const existing = inFlight.get(key);
@@ -87,11 +87,24 @@ export const apiPost = async <T = unknown>(path: string, body?: unknown): Promis
   inFlight.set(key, task);
   return task;
 };
-export const apiPatch = <T = unknown>(path: string, body?: unknown) =>
-  api<T>(path, { method: "PATCH", body: JSON.stringify(body ?? {}) });
+export const apiPost = <T = unknown>(path: string, body?: unknown) => mutate<T>(path,body);
+export const apiPatch = <T = unknown>(path: string, body?: unknown) => mutate<T>(path,body,"PATCH");
 export const apiDelete = <T = unknown>(path: string) => api<T>(path, { method: "DELETE" });
 
 export function newMutationId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
   return `m-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/** Exhaust paginated selectors instead of silently truncating at the API cap. */
+export async function apiCollection<T>(path: string): Promise<{items:T[];total:number}> {
+  const url=new URL(path,"https://local.invalid");url.searchParams.set("limit","200");
+  const items:T[]=[];
+  for(let offset=0;;){
+    url.searchParams.set("offset",String(offset));
+    const page=await apiGet<{items:T[];total?:number}>(`${url.pathname}${url.search}`);
+    items.push(...page.items);offset+=page.items.length;
+    if(!page.items.length||(page.total!==undefined?offset>=page.total:page.items.length<200))return {items,total:page.total??items.length};
+    if(offset>100000)throw new ClientError("استخدم البحث لتقليل حجم النتائج",400);
+  }
 }

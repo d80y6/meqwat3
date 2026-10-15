@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { allowedMutationOrigin } from "../src/lib/csrf";
 import { toCents, toMilliQty, mulQtyPrice, fromCents, roundRatio } from "../src/lib/money";
 import { checkRateLimitAsync } from "../src/lib/rate-limit";
@@ -21,6 +21,8 @@ describe("strict financial inputs", () => {
 });
 
 describe("CSRF policy", () => {
+  beforeEach(()=>vi.stubEnv("APP_ORIGIN","https://shop.example"));
+  afterEach(()=>vi.unstubAllEnvs());
   const req = (headers: Record<string,string>) => new Request("https://shop.example/api/sales", {method:"POST",headers});
   it("rejects cross-origin and sibling-origin cookie mutations", () => {
     expect(allowedMutationOrigin(req({origin:"https://evil.example","sec-fetch-site":"same-site"}))).toBe(false);

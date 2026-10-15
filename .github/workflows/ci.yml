@@ -13,7 +13,7 @@ concurrency:
 jobs:
   web:
     name: Web (typecheck · test · build)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: postgres:16
@@ -56,6 +56,10 @@ jobs:
         run: npx tsx src/db/seed.ts
       - name: Unit + integration tests (real PostgreSQL)
         run: npx vitest run
+      - name: Install PostgreSQL recovery tools
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client-16
+      - name: Isolated backup and restore drill
+        run: python scripts/ci-capture.py node scripts/verify-backup-restore.mjs
       - name: Production build
         run: npm run build
       - name: Install Playwright browser
@@ -65,7 +69,7 @@ jobs:
 
   flutter:
     name: Mobile (analyze · test · build APK)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: mobile
@@ -80,16 +84,16 @@ jobs:
           channel: stable
           cache: true
       - name: Generate Android scaffolding (platform folders are generated, not committed)
-        run: flutter create --project-name meqwat_mobile --org com.meqwat --platforms=android .
+        run: python ../scripts/ci-capture.py flutter create --no-pub --project-name meqwat_mobile --org com.meqwat --platforms=android .
       - name: Restore committed sources (in case create touched them)
-        run: git checkout -- pubspec.yaml lib analysis_options.yaml test || true
-      - run: flutter pub get
+        run: git restore -- pubspec.yaml lib analysis_options.yaml test
+      - run: python ../scripts/ci-capture.py flutter pub get
       - name: Analyze
-        run: flutter analyze
+        run: python ../scripts/ci-capture.py flutter analyze --no-fatal-infos
       - name: Test
-        run: flutter test
+        run: python ../scripts/ci-capture.py flutter test
       - name: Build debug APK (compile proof)
-        run: flutter build apk --debug
+        run: python ../scripts/ci-capture.py flutter build apk --debug
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
@@ -99,7 +103,7 @@ jobs:
 
   docker:
     name: Docker image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3

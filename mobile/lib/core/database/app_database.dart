@@ -1,4 +1,6 @@
 import 'dart:convert';
+import 'dart:collection';
+import 'package:uuid/uuid.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 
@@ -29,8 +31,12 @@ class AppDatabase {
     final dir = await getDatabasesPath();
     final db = await openDatabase(
       p.join(dir, 'meqwat.db'),
-      version: 1,
+      version: 2,
+      onUpgrade: (db, oldVersion, newVersion) async {
+        if (oldVersion < 2) await _createV2(db);
+      },
       onCreate: (db, _) async {
+        await _createV2(db);
         await db.execute('''
           CREATE TABLE products(
             id TEXT PRIMARY KEY, name TEXT NOT NULL, unit TEXT NOT NULL,
@@ -61,6 +67,47 @@ class AppDatabase {
       },
     );
     return AppDatabase(db);
+  }
+
+  static Future<void> _createV2(Database db) async {
+    await db.execute('CREATE TABLE request_keys(owner TEXT NOT NULL, signature TEXT NOT NULL, mutation_id TEXT NOT NULL, PRIMARY KEY(owner,signature))');
+    await db.execute('CREATE TABLE response_cache(owner TEXT NOT NULL, path TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(owner,path))');
+  }
+  String _signature(String path, Map<String,dynamic> body) {
+    dynamic sorted(dynamic value) {
+      if (value is Map) return SplayTreeMap<String,dynamic>.from(value.map((k,v)=>MapEntry(k.toString(),sorted(v))));
+      if (value is List) return value.map(sorted).toList();
+      return value;
+    }
+    return jsonEncode({'path':path,'body':sorted(body)});
+  }
+  Future<String> requestId(String path, Map<String,dynamic> body) async {
+    final owner=ownerKey;if(owner==null)throw StateError('Login required');
+    final signature=_signature(path,body);
+    return _db.transaction((tx) async {
+      final rows=await tx.query('request_keys',where:'owner=? AND signature=?',whereArgs:[owner,signature]);
+      if(rows.isNotEmpty)return rows.first['mutation_id'] as String;
+      final id=const Uuid().v4();
+      await tx.insert('request_keys',{'owner':owner,'signature':signature,'mutation_id':id});return id;
+    });
+  }
+  Future<void> confirmRequest(String owner,String path,Map<String,dynamic> body) async {
+    await _db.delete('request_keys',where:'owner=? AND signature=?',whereArgs:[owner,_signature(path,body)]);
+  }
+  Future<void> cacheResponse(String owner,String path,Map<String,dynamic> data) async {
+    if(owner!=ownerKey)return;
+    await _db.insert('response_cache',{'owner':owner,'path':path,'payload':jsonEncode(data)},conflictAlgorithm:ConflictAlgorithm.replace);
+  }
+  Future<Map<String,dynamic>?> cachedResponse(String path) async {
+    if(ownerKey==null)return null;
+    final rows=await _db.query('response_cache',where:'owner=? AND path=?',whereArgs:[ownerKey,path]);
+    return rows.isEmpty?null:jsonDecode(rows.first['payload'] as String) as Map<String,dynamic>;
+  }
+  Future<void> retryConflict(String id) async {
+    final rows=await _db.query('outbox',where:'client_mutation_id=?',whereArgs:[id]);
+    if(rows.isEmpty||!_owned(rows.first))throw StateError('Queue owner mismatch');
+    // Same immutable payload and ID only. Corrected operations must be reviewed as new operations.
+    await _db.update('outbox',{'status':'pending','error':null},where:'client_mutation_id=?',whereArgs:[id]);
   }
 
   Database get raw => _db;

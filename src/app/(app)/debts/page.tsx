@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { HandCoins, Wallet, Truck } from "lucide-react";
-import { apiGet, apiPost } from "@/lib/client";
+import { apiCollection, apiPost } from "@/lib/client";
 import { fmtMoney, addMoney, subMoney } from "@/lib/money";
 import { Btn, Field, Input, Modal, PageHeader, TableShell, Badge, EmptyState, Loading, StatCard, useToast } from "@/components/ui";
 
@@ -30,9 +30,9 @@ export default function DebtsPage() {
     setLoading(true);
     try {
       const [c, s, p] = await Promise.all([
-        apiGet<{ items: Party[] }>("/api/customers?debt=1&limit=200"),
-        apiGet<{ items: Party[] }>("/api/suppliers?debt=1&limit=200"),
-        apiGet<{ items: PaymentRow[] }>("/api/payments?limit=50"),
+        apiCollection<Party>("/api/customers?debt=1&limit=200"),
+        apiCollection<Party>("/api/suppliers?debt=1&limit=200"),
+        apiCollection<PaymentRow>("/api/payments?limit=50"),
       ]);
       setCustomers(c.items);
       setSuppliers(s.items);

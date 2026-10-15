@@ -36,11 +36,26 @@ flutter pub get
 flutter run --dart-define=MEQWAT_API=https://your-server.example
 ```
 
-## Status / honesty note
-This client implements the full offline sync contract against the
-production API, with login + POS modules. It is **compiled by GitHub
-Actions on every push** (`.github/workflows/ci.yml`: scaffold generation →
-`flutter analyze` → `flutter test` → `flutter build apk --debug`, APK kept
-as a build artifact) because the development sandbox has no Flutter SDK.
-Inventory/debts mobile screens follow the same pattern and are the next
-iteration (the web app has them fully).
+## Current completion checkpoint
+
+Native source includes POS customer/partial-payment/discount/shift selection; purchases;
+role-aware navigation; master-data/user forms; sales/receipt viewing and returns;
+registers/shifts/expenses; reports; subscription requests; password change/reset;
+and a queue/conflict review screen. Actual server permissions remain authoritative.
+
+Money uses integer minor units. POS/purchase forms clear only after SQLite acknowledgement.
+Financial direct requests retain durable retry IDs. SQLite v2 adds owner-scoped request keys
+and response caches; legacy ownerless operations are retained, not assigned to a new user.
+Foreground sync retries every 30 seconds while HomeShell is alive, with a single-flight guard.
+This is NOT an operating-system background service or a cold-offline login guarantee.
+
+The local sandbox has no Flutter/Dart. Dart source has syntax-only parser checks; those are
+not compilation or device evidence. GitHub CI is being exercised for dependency resolution,
+analyze, tests and a debug APK. Do not distribute until the actual run passes and device
+acceptance closes. Use the run status recorded in docs/audit/COMPLETION-STATUS.md.
+
+Still required: secure persistent session/offline unlocking policy, durable device restart
+and multi-user acceptance, storage-full/conflict repair UX, actual thermal printing, signed
+release/store distribution and production endpoint/TLS validation. Receipt text copying is
+not printer integration. API base URL must be supplied via MEQWAT_API; the default is a
+placeholder. No credentials or production endpoints are embedded.

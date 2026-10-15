@@ -1,7 +1,8 @@
+import { getTenantPlan } from "@/lib/services";
 import { db } from "@/db";
-import { users, sessions } from "@/db/schema";
-import { and, eq } from "drizzle-orm";
-import { ok, handler, requireTenantUser, audit, ApiError } from "@/lib/api";
+import { users, sessions, auditLogs } from "@/db/schema";
+import { and, eq, sql, count } from "drizzle-orm";
+import { ok, handler, requireTenantUser, ApiError } from "@/lib/api";
 import { hashPassword } from "@/lib/auth";
 import type { Role } from "@/lib/permissions";
 
@@ -38,6 +39,18 @@ export const PATCH = handler(async (req: Request, { params }: { params: Promise<
 
   }
   const updated = await db.transaction(async tx => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${user.tenantId},0))`);
+    const [current]=await tx.select().from(users).where(and(eq(users.id,id),eq(users.tenantId,user.tenantId))).for('update');
+    if(!current)throw new ApiError('المستخدم غير موجود',404);
+    if(body.isActive===true&&!current.isActive){
+      const plan=await getTenantPlan(user.tenantId,tx);
+      const [active]=await tx.select({n:count()}).from(users).where(and(eq(users.tenantId,user.tenantId),eq(users.isActive,true)));
+      if(plan&&active.n>=plan.maxUsers)throw new ApiError('حد المستخدمين في الباقة',409);
+    }
+    if(current.role==='tenant_owner'&&current.isActive&&(body.isActive===false||(body.role&&body.role!=='tenant_owner'))){
+      const [owners]=await tx.select({n:count()}).from(users).where(and(eq(users.tenantId,user.tenantId),eq(users.role,'tenant_owner'),eq(users.isActive,true)));
+      if(owners.n<=1)throw new ApiError('لا يمكن تعطيل آخر مالك',409);
+    }
     if (body.password || body.role !== undefined || body.isActive === false) {
       await tx.update(sessions).set({ revokedAt: new Date() }).where(eq(sessions.userId, id));
     }
@@ -46,8 +59,8 @@ export const PATCH = handler(async (req: Request, { params }: { params: Promise<
     .set(patch)
     .where(and(eq(users.id, id), eq(users.tenantId, user.tenantId)))
     .returning({ id: users.id, name: users.name, email: users.email, phone: users.phone, role: users.role, isActive: users.isActive });
+    await tx.insert(auditLogs).values({tenantId:user.tenantId,userId:user.id,action:"user.update",entityType:"user",entityId:id,metadata:{fields:Object.keys(patch)}});
     return row;
   });
-  await audit(user, "user.update", "user", id, { fields: Object.keys(patch) });
   return ok(updated);
 });

@@ -26,6 +26,7 @@ void main() {
             items: any(named: 'items'),
             paidAmount: any(named: 'paidAmount'),
             customerId: any(named: 'customerId'),
+            shiftId: any(named:'shiftId'), registerId:any(named:'registerId'),
             discount: any(named: 'discount'),
             label: any(named: 'label'),
           )).thenAnswer((_) async => 'mutation-1');
@@ -47,6 +48,7 @@ void main() {
               items: any(named: 'items'),
               paidAmount: '16000',
               customerId: any(named: 'customerId'),
+            shiftId: any(named:'shiftId'), registerId:any(named:'registerId'),
               discount: any(named: 'discount'),
               label: any(named: 'label'),
             )).called(1);

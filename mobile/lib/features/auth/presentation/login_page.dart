@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../../core/api/api_client.dart';
+import 'password_page.dart';
 
 /// Email/password login against POST /api/auth/login (same session
 /// contract as the web app). Errors from the server are shown verbatim.
@@ -43,11 +44,21 @@ class _LoginPageState extends State<LoginPage> {
     });
     try {
       await context.read<ApiClient>().login(email, _password.text);
+      if (!mounted) return;
+      final me=await context.read<ApiClient>().get('/api/auth/me');
+      if (!mounted) return;
+      final user=me['user'] as Map<String,dynamic>;
+      if(user['mustChangePassword']==true){
+        await Navigator.push(context,MaterialPageRoute<void>(builder:(_)=>const PasswordPage(change:true)));
+        if(mounted)setState(()=>_error='سجّل الدخول بكلمة المرور الجديدة');
+        return;
+      }
+      if(user['tenantId']==null)throw ApiException('تطبيق المتجر لا يدعم حساب مدير المنصة');
       widget.onLoggedIn();
     } on ApiException catch (e) {
-      setState(() => _error = e.message);
+      if(mounted)setState(() => _error = e.message);
     } catch (_) {
-      setState(() => _error = 'تعذّر الاتصال بالخادم — تحقق من الشبكة');
+      if(mounted)setState(() => _error = 'تعذّر الاتصال بالخادم — تحقق من الشبكة');
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -100,6 +111,7 @@ class _LoginPageState extends State<LoginPage> {
                     ),
                     onSubmitted: (_) => _submit(),
                   ),
+                  TextButton(onPressed:_loading?null:()=>Navigator.push(context,MaterialPageRoute<void>(builder:(_)=>const PasswordPage())),child:const Text('نسيت كلمة المرور')),
                   const SizedBox(height: 20),
                   SizedBox(
                     width: double.infinity,

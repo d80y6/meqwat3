@@ -808,8 +808,8 @@ export async function closeShift(ctx: Ctx, shiftId: string, input: { countedCash
 }
 
 /** Plan limits helper used when creating users/products. */
-export async function getTenantPlan(tenantId: string) {
-  const [row] = await db
+export async function getTenantPlan(tenantId: string, connection: typeof db | Tx = db) {
+  const [row] = await connection
     .select({ plan: plans })
     .from(subscriptions)
     .innerJoin(plans, eq(subscriptions.planId, plans.id))

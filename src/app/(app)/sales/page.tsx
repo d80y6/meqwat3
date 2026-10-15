@@ -2,7 +2,7 @@
 
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { ChevronDown, ChevronLeft, RotateCcw, Printer } from "lucide-react";
-import { apiGet, apiPost } from "@/lib/client";
+import { apiCollection, apiPost } from "@/lib/client";
 import { subMoney, fmtMoney, fmtQty } from "@/lib/money";
 import { Btn, Field, Input, Select, Modal, PageHeader, TableShell, Badge, EmptyState, Loading, useToast } from "@/components/ui";
 
@@ -35,7 +35,7 @@ export default function SalesPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const d = await apiGet<{ items: Sale[] }>("/api/sales?limit=50");
+      const d = await apiCollection<Sale>("/api/sales?limit=50");
       setItems(d.items);
     } catch (e) { toast.push("error", e instanceof Error ? e.message : "تعذر التحميل"); }
     finally { setLoading(false); }

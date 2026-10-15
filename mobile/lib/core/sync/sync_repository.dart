@@ -21,7 +21,11 @@ class SyncRepository {
   final ApiClient api;
   final AppDatabase db;
 
-  Future<SyncOutcome> syncNow() async {
+  Future<SyncOutcome>? _running;
+  Future<SyncOutcome> syncNow() {
+    return _running ??= _syncBatch().whenComplete(() => _running=null);
+  }
+  Future<SyncOutcome> _syncBatch() async {
     final owner = db.ownerKey;
     if (owner == null) throw StateError('Login required');
     final me = await api.get('/api/auth/me');
